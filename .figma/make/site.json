@@ -1,0 +1,10 @@
+{
+  "description": "Manage accounts, contacts, leads, projects, and service cases with integrated resource allocation and time tracking to streamline business operations.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
