@@ -16,8 +16,8 @@ You don't need to install pnpm yourself. The commands below run it through `npx`
 ### Install and run
 
 ```bash
-git clone <repo-url>
-cd <repo-folder>
+git clone https://github.com/SweKingdom/sirocco-crm-ui-prototype.git
+cd sirocco-crm-ui-prototype
 npx --yes pnpm@10 install
 npx --yes pnpm@10 dev
 ```
