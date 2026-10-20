@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Button, Heading, TextInput } from "./ui";
 
 type IconName =
@@ -936,40 +936,235 @@ function Utilization() {
   );
 }
 
-const weekEntries = [
-  { day: "Monday", date: "Jun 10", entries: [["Nova implementation", "Nordic Solutions", "Data migration workshop", 4.5, true], ["CRM migration", "TechVision AB", "Field mapping review", 3.5, true]] },
-  { day: "Tuesday", date: "Jun 11", entries: [["CRM migration", "TechVision AB", "Integration testing with SAP", 6, true], ["Internal enablement", "Sirocco", "Team learning session", 1.5, false]] },
-  { day: "Wednesday", date: "Jun 12", entries: [["Nova implementation", "Nordic Solutions", "Steering group preparation", 3, true], ["Digital platform 2.0", "Bright Digital", "Sprint planning", 4, true], ["Internal enablement", "Sirocco", "Bid review", 1, false]] },
-  { day: "Thursday", date: "Jun 13", entries: [["Digital platform 2.0", "Bright Digital", "Checkout flow build", 8.5, true]] },
-] as const;
+type ProjectKind = "client" | "internal" | "absence";
+type TimeProject = { name: string; account: string; kind: ProjectKind };
+type TimeType = { name: string; kind: ProjectKind; billable: boolean; confirm?: boolean };
+type TimeEntry = { id: number; day: number; project: string; type: string; task: string; hours: number; billable: boolean };
+
+const standardDay = 8;
+
+const timeDays = [
+  { short: "M", name: "Monday", date: "Jun 10" },
+  { short: "T", name: "Tuesday", date: "Jun 11" },
+  { short: "W", name: "Wednesday", date: "Jun 12" },
+  { short: "T", name: "Thursday", date: "Jun 13" },
+  { short: "F", name: "Friday", date: "Jun 14" },
+];
+
+const projectKinds: { kind: ProjectKind; label: string; hint: string }[] = [
+  { kind: "client", label: "Client projects", hint: "client projects" },
+  { kind: "internal", label: "Internal", hint: "internal work" },
+  { kind: "absence", label: "Absence", hint: "absence" },
+];
+
+const timeProjects: TimeProject[] = [
+  { name: "Nova implementation", account: "Nordic Solutions", kind: "client" },
+  { name: "CRM migration", account: "TechVision AB", kind: "client" },
+  { name: "Digital platform 2.0", account: "Bright Digital", kind: "client" },
+  { name: "Service portal", account: "Forma Studio", kind: "client" },
+  { name: "Internal enablement", account: "Sirocco", kind: "internal" },
+  { name: "Absence & leave", account: "Sirocco", kind: "absence" },
+];
+
+// The 12 time types in Dynamics today. Each project kind only offers its own types,
+// and billable is defaulted from the type. Rules marked confirm are proposals for Jack.
+const timeTypes: TimeType[] = [
+  { name: "Client Work", kind: "client", billable: true },
+  { name: "Overtime", kind: "client", billable: true, confirm: true },
+  { name: "Travel", kind: "client", billable: false, confirm: true },
+  { name: "Support", kind: "client", billable: true, confirm: true },
+  { name: "Internal Project", kind: "internal", billable: false },
+  { name: "Internal Development", kind: "internal", billable: false },
+  { name: "Presales Support", kind: "internal", billable: false, confirm: true },
+  { name: "Customer Outreach", kind: "internal", billable: false },
+  { name: "Resource Assignment Sales", kind: "internal", billable: false },
+  { name: "On Break", kind: "internal", billable: false, confirm: true },
+  { name: "Vacation", kind: "absence", billable: false },
+  { name: "Absence", kind: "absence", billable: false },
+];
+
+const initialTimeEntries: TimeEntry[] = [
+  { id: 1, day: 0, project: "Nova implementation", type: "Client Work", task: "Data migration workshop", hours: 4.5, billable: true },
+  { id: 2, day: 0, project: "CRM migration", type: "Client Work", task: "Field mapping review", hours: 3.5, billable: true },
+  { id: 3, day: 1, project: "CRM migration", type: "Client Work", task: "Integration testing with SAP", hours: 6, billable: true },
+  { id: 4, day: 1, project: "Internal enablement", type: "Internal Development", task: "Team learning session", hours: 1.5, billable: false },
+  { id: 5, day: 2, project: "Nova implementation", type: "Client Work", task: "Steering group preparation", hours: 3, billable: true },
+  { id: 6, day: 2, project: "Digital platform 2.0", type: "Client Work", task: "Sprint planning", hours: 4, billable: true },
+  { id: 7, day: 2, project: "Internal enablement", type: "Presales Support", task: "Bid review", hours: 1, billable: false },
+  { id: 8, day: 3, project: "Digital platform 2.0", type: "Client Work", task: "Checkout flow build", hours: 8.5, billable: true },
+];
+
+function hoursOnDay(entries: TimeEntry[], day: number) {
+  return entries.filter((entry) => entry.day === day).reduce((sum, entry) => sum + entry.hours, 0);
+}
+
+function EntryForm({ entries, defaultDay, autoFocus, onSave }: { entries: TimeEntry[]; defaultDay: number; autoFocus?: boolean; onSave: (entry: Omit<TimeEntry, "id">) => void }) {
+  const [project, setProject] = useState("");
+  const [type, setType] = useState("");
+  const [day, setDay] = useState(defaultDay);
+  const [hours, setHours] = useState("");
+  const [task, setTask] = useState("");
+  const [billable, setBillable] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+
+  const kind = timeProjects.find((item) => item.name === project)?.kind;
+  const types = timeTypes.filter((item) => item.kind === kind);
+  const rule = timeTypes.find((item) => item.name === type);
+  const left = Math.max(0, standardDay - hoursOnDay(entries, day));
+
+  function chooseProject(name: string) {
+    const nextKind = timeProjects.find((item) => item.name === name)?.kind;
+    const firstType = timeTypes.find((item) => item.kind === nextKind);
+    setProject(name);
+    setType(firstType?.name ?? "");
+    setBillable(firstType?.billable ?? false);
+    setError("");
+    setSaved("");
+  }
+
+  function chooseType(name: string) {
+    setType(name);
+    setBillable(timeTypes.find((item) => item.name === name)?.billable ?? false);
+    setSaved("");
+  }
+
+  function save() {
+    const value = Number(hours.replace(",", "."));
+    if (!project || !type) return setError("Choose a project and a type.");
+    if (!value || value <= 0) return setError("Enter the hours you worked.");
+    if (Math.round(value * 4) !== value * 4) return setError("Use 15-minute steps, e.g. 1.25 or 2.5.");
+    if (hoursOnDay(entries, day) + value > 24) return setError(`That would be more than 24 h on ${timeDays[day].name}.`);
+    onSave({ day, project, type, task: task.trim() || type, hours: value, billable });
+    setSaved(`Saved ${value.toFixed(2).replace(/0$/, "")} h ${type} on ${timeDays[day].name}.`);
+    setProject("");
+    setType("");
+    setHours("");
+    setTask("");
+    setBillable(false);
+    setError("");
+  }
+
+  const billableHint = !rule
+    ? "Set automatically from the type"
+    : billable === rule.billable
+      ? `Set from ${rule.name}${rule.confirm ? " · rule to confirm with Jack" : ""}`
+      : `Changed by you · ${rule.name} is normally ${rule.billable ? "billable" : "not billable"}`;
+
+  return (
+    <>
+      <div className="form-grid">
+        <label className="field field--wide">
+          <span>1 · Project</span>
+          <select autoFocus={autoFocus} value={project} onChange={(event) => chooseProject(event.target.value)}>
+            <option value="">Choose a project</option>
+            {projectKinds.map((group) => (
+              <optgroup key={group.kind} label={group.label}>
+                {timeProjects.filter((item) => item.kind === group.kind).map((item) => <option key={item.name} value={item.name}>{item.name} · {item.account}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+        <label className="field field--wide">
+          <span>2 · Type of work</span>
+          <select disabled={!project} value={type} onChange={(event) => chooseType(event.target.value)}>
+            {!project && <option value="">Choose a project first</option>}
+            {types.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+          </select>
+          {project && <small className="field-hint">Showing the types for {projectKinds.find((group) => group.kind === kind)?.hint}</small>}
+        </label>
+        <label className="field">
+          <span>Day</span>
+          <select value={day} onChange={(event) => { setDay(Number(event.target.value)); setSaved(""); }}>
+            {timeDays.map((item, index) => <option key={item.name} value={index}>{item.name.slice(0, 3)}, {item.date}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>Hours</span>
+          <TextInput inputMode="decimal" placeholder={left ? left.toFixed(1) : "0.0"} value={hours} onChange={(event) => { setHours(event.target.value); setSaved(""); }} />
+        </label>
+        <div className="field--wide day-left">
+          {left > 0 ? (
+            <>
+              <span>{timeDays[day].name}: {left.toFixed(1)} h left of {standardDay} h</span>
+              <Button className="text-button" type="button" onClick={() => setHours(String(left))}>Fill {left.toFixed(1)} h</Button>
+            </>
+          ) : (
+            <span>{timeDays[day].name} is full ({standardDay} h logged)</span>
+          )}
+        </div>
+        <label className="field field--wide">
+          <span>Description</span>
+          <TextInput placeholder="What did you work on?" value={task} onChange={(event) => setTask(event.target.value)} />
+        </label>
+        <div className="field--wide">
+          <button
+            aria-checked={billable}
+            className="toggle toggle-button"
+            disabled={!type || kind === "absence"}
+            onClick={() => setBillable(!billable)}
+            role="switch"
+            type="button"
+          >
+            <span className={`toggle-switch ${billable ? "is-on" : ""}`}><i /></span>Billable
+          </button>
+          <small className="field-hint">{billableHint}</small>
+        </div>
+      </div>
+      {error && <p className="form-message form-message--error" role="alert">{error}</p>}
+      {saved && <p className="form-message form-message--saved" role="status">{saved}</p>}
+      <Button className="primary-button compact full" onClick={save} type="button">Save entry</Button>
+    </>
+  );
+}
 
 function TimeEntries() {
+  const [entries, setEntries] = useState(initialTimeEntries);
+  const [adding, setAdding] = useState(false);
+  const [lastId, setLastId] = useState<number | null>(null);
+  const total = entries.reduce((sum, entry) => sum + entry.hours, 0);
+  const days = timeDays.map((_, index) => hoursOnDay(entries, index));
+
+  useEffect(() => {
+    if (!adding) return;
+    const close = (event: KeyboardEvent) => event.key === "Escape" && setAdding(false);
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [adding]);
+
+  function save(entry: Omit<TimeEntry, "id">) {
+    const id = Math.max(0, ...entries.map((item) => item.id)) + 1;
+    setEntries((current) => [...current, { ...entry, id }]);
+    setLastId(id);
+    setAdding(false);
+  }
+
   return (
     <>
       <section className="time-hero">
-        <div><span>WEEK 24</span><strong>32.0 h</strong><small>of 40 scheduled hours</small></div>
-        <div className="week-days">{["M", "T", "W", "T", "F"].map((day, index) => <span className={index < 4 ? "is-filled" : ""} key={`${day}-${index}`}>{day}<b>{[8, 7.5, 8, 8.5, 0][index]}h</b></span>)}</div>
-        <Button className="primary-button"><Icon name="plus" size={17} /> Add time entry</Button>
+        <div><span>WEEK 24</span><strong>{total.toFixed(1)} h</strong><small>of {standardDay * 5} scheduled hours</small></div>
+        <div className="week-days">{timeDays.map((day, index) => <span className={days[index] ? "is-filled" : ""} key={day.name}>{day.short}<b>{days[index]}h</b></span>)}</div>
+        <Button className="primary-button" onClick={() => setAdding(true)}><Icon name="plus" size={17} /> Add time entry</Button>
       </section>
       <section className="two-col">
         <article className="panel list-panel">
-          <div className="panel-heading"><div><Heading level={2}>This week</Heading><p>Your logged time, newest first</p></div><Badge tone="sand">80% complete</Badge></div>
-          {[...weekEntries].reverse().map((group) => {
-            const total = group.entries.reduce((sum, entry) => sum + entry[3], 0);
-            return (
-              <div className="day-group" key={group.day}>
-                <div className="day-heading"><strong>{group.day}</strong><span>{group.date}</span><b>{total.toFixed(1)} h</b></div>
-                {group.entries.map(([project, account, task, hours, billable]) => (
-                  <div className="entry-row" key={`${project}-${task}`}>
-                    <span className="company-logo">{account.slice(0, 2).toUpperCase()}</span>
-                    <span className="entry-copy"><strong>{task}</strong><small>{project} · {account}</small></span>
-                    <Badge tone={billable ? "green" : "slate"}>{billable ? "Billable" : "Internal"}</Badge>
-                    <strong className="entry-hours">{hours.toFixed(1)} h</strong>
+          <div className="panel-heading"><div><Heading level={2}>This week</Heading><p>Your logged time, newest first</p></div><Badge tone="sand">{Math.round((total / (standardDay * 5)) * 100)}% complete</Badge></div>
+          {timeDays.map((day, index) => ({ day, index, items: entries.filter((entry) => entry.day === index).reverse() })).filter((group) => group.items.length).reverse().map((group) => (
+            <div className="day-group" key={group.day.name}>
+              <div className="day-heading"><strong>{group.day.name}</strong><span>{group.day.date}</span><b>{days[group.index].toFixed(1)} h</b></div>
+              {group.items.map((entry) => {
+                const project = timeProjects.find((item) => item.name === entry.project);
+                return (
+                  <div className={`entry-row ${entry.id === lastId ? "is-new" : ""}`} key={entry.id}>
+                    <span className="company-logo">{(project?.account ?? entry.project).slice(0, 2).toUpperCase()}</span>
+                    <span className="entry-copy"><strong>{entry.task}</strong><small>{entry.type} · {entry.project} · {project?.account}</small></span>
+                    <Badge tone={entry.billable ? "green" : "slate"}>{entry.billable ? "Billable" : project?.kind === "absence" ? "Absence" : "Internal"}</Badge>
+                    <strong className="entry-hours">{entry.hours.toFixed(1)} h</strong>
                   </div>
-                ))}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          ))}
         </article>
         <div className="side-stack">
           <article className="timer-card">
@@ -979,18 +1174,22 @@ function TimeEntries() {
             <Button className="primary-button compact">Stop &amp; save</Button>
           </article>
           <article className="panel form-panel">
-            <div className="panel-heading"><div><Heading level={2}>Quick entry</Heading><p>Log time for today</p></div></div>
-            <div className="form-grid">
-              <label className="field field--wide"><span>Project</span><div className="fake-select">Nova implementation <Icon name="arrow" size={14} /></div></label>
-              <label className="field"><span>Date</span><TextInput defaultValue="Fri, Jun 14" /></label>
-              <label className="field"><span>Hours</span><TextInput defaultValue="2.0" /></label>
-              <label className="field field--wide"><span>Description</span><TextInput placeholder="What did you work on?" /></label>
-              <label className="toggle field--wide"><span className="toggle-switch is-on"><i /></span>Billable</label>
-            </div>
-            <Button className="primary-button compact full">Save entry</Button>
+            <div className="panel-heading"><div><Heading level={2}>Quick entry</Heading><p>Pick the project first, then the type</p></div></div>
+            <EntryForm defaultDay={4} entries={entries} onSave={save} />
           </article>
         </div>
       </section>
+      {adding && (
+        <div className="modal-backdrop" onClick={() => setAdding(false)}>
+          <div aria-label="Add time entry" aria-modal="true" className="modal-card" onClick={(event) => event.stopPropagation()} role="dialog">
+            <div className="panel-heading">
+              <div><Heading level={2}>Add time entry</Heading><p>Pick the project first, then the type of work</p></div>
+              <Button aria-label="Close" className="icon-button small" onClick={() => setAdding(false)}><Icon name="close" size={15} /></Button>
+            </div>
+            <EntryForm autoFocus defaultDay={4} entries={entries} onSave={save} />
+          </div>
+        </div>
+      )}
     </>
   );
 }
