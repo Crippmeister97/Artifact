@@ -780,7 +780,7 @@ function Projects() {
               <div className="project-phase"><span>Phase</span><strong>{project.phase}</strong></div>
               <div className="project-meta"><span>Delivery progress</span><strong>{project.progress}%</strong></div>
               <div className="progress"><span style={{ width: `${project.progress}%` }} /></div>
-              <div className="project-footer"><span className="mini-person"><span className="avatar avatar--tiny">{project.manager}</span>Project manager</span><strong>Due {project.due}</strong></div>
+              <div className="project-footer"><span className="mini-person"><Avatar initials={project.manager} name={team.find((person) => person.initials === project.manager)?.name ?? project.manager} size="tiny" />Project manager</span><strong>Due {project.due}</strong></div>
             </article>
           ))}
         </div>
@@ -885,7 +885,7 @@ function Resources() {
         {visible.map((person) => (
           <article className="team-card" key={person.name}>
             <div className="team-card-top">
-              <div className="team-head"><span className="avatar avatar--large">{person.initials}</span><span className="availability-dot" /></div>
+              <div className="team-head"><Avatar initials={person.initials} name={person.name} size="large" /><span className="availability-dot" /></div>
               <span className="location">{person.location}</span>
             </div>
             <Heading level={3}>{person.name}</Heading><p>{person.role}</p>
@@ -926,7 +926,7 @@ function Utilization() {
                 const average = Math.round(working.reduce((sum, value) => sum + value, 0) / working.length);
                 return (
                   <tr key={person.name}>
-                    <td><span className="company-cell"><span className="avatar avatar--small">{person.initials}</span><span className="case-cell"><strong>{person.name}</strong><small>{person.role}</small></span></span></td>
+                    <td><span className="company-cell"><Avatar initials={person.initials} name={person.name} size="small" /><span className="case-cell"><strong>{person.name}</strong><small>{person.role}</small></span></span></td>
                     {person.weeks.map((value, index) => (
                       <td key={weeks[index]}><span className={`heat heat--${heatLevel(value)}`}>{value === 0 ? "Away" : `${value}%`}</span></td>
                     ))}
@@ -2292,7 +2292,7 @@ function HoursOverview() {
                 <tr key={person.id}>
                   <td>
                     <span className="company-cell">
-                      <span className="avatar avatar--small">{initialsOf(person.name)}</span>
+                      <Avatar name={person.name} size="small" />
                       <span className="case-cell">
                         <strong>{person.name}</strong>
                         <small>{person.role} · {person.unit} · PM {person.pm}</small>
@@ -2362,7 +2362,7 @@ function HoursOverview() {
           {byPm.length ? (
             byPm.map(([pm, group]) => (
               <div className="ho-pm" key={pm}>
-                <span className="avatar avatar--small">{initialsOf(pm)}</span>
+                <Avatar name={pm} size="small" />
                 <span className="case-cell"><strong>{pm}</strong><small>{plural(group.people, "person", "people")} · oldest {fmtDay(group.oldest)}</small></span>
                 <strong className="ho-pm-hours">{fmtHours(group.hours)} h</strong>
                 <Button className="text-button" onClick={() => setToast(`Asked ${pm} to approve ${fmtHours(group.hours)} h.`)}>Nudge</Button>
@@ -2526,7 +2526,7 @@ function Approvals() {
         <div className="approval-list">
           {visible.map((item) => (
             <article className={`approval ${decided[item.id] ? "is-decided" : ""}`} key={item.id}>
-              <span className="avatar">{item.initials}</span>
+              <Avatar initials={item.initials} name={item.name} />
               <span className="approval-copy">
                 <strong>{item.name} <span>· {item.title}</span></strong>
                 <small>{item.detail} · {item.project} · {item.age}</small>
@@ -2592,6 +2592,57 @@ const contacts: Contact[] = [
 
 const roleTone = (role: string) => (role === "Economic Buyer" ? "sand" : role === "Champion" ? "green" : "slate");
 const initialsOf = (name: string) => name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+
+// Made-up people get an AI-generated face from thispersondoesnotexist.com (none of them is a real person),
+// stored in public/avatars. Anyone without a picture, such as real colleagues, keeps their initials.
+const avatarPhotos = new Set([
+  "adam-lund",
+  "albin-strand",
+  "alice-wikstrom",
+  "alva-lindqvist",
+  "anna-berg",
+  "anna-lind",
+  "david-nilsson",
+  "ebba-holmgren",
+  "elias-holm",
+  "ella-bergstrom",
+  "erik-sand",
+  "freja-nordin",
+  "hugo-sandberg",
+  "isak-soderberg",
+  "johan-ek",
+  "johanna-s",
+  "karin-dahl",
+  "leo-hedlund",
+  "liam-ekstrom",
+  "lina-persson",
+  "lisa-ek",
+  "lucas-forsberg",
+  "maja-karlsson",
+  "marcus-holm",
+  "melvin-ek",
+  "mikael-k",
+  "noah-berg",
+  "nora-fransson",
+  "oliver-nystrom",
+  "oscar-dahl",
+  "peter-ek",
+  "saga-engstrom",
+  "sara-ahmed",
+  "sofia-l",
+  "sofia-lind",
+  "tilde-axelsson",
+  "viktor-larsson",
+  "wilma-sjoberg",
+]);
+const slugOf = (name: string) => name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+function Avatar({ name, initials, size }: { name: string; initials?: string; size?: "tiny" | "small" | "large" | "xl" }) {
+  const className = `avatar${size ? ` avatar--${size}` : ""}`;
+  const slug = slugOf(name);
+  if (avatarPhotos.has(slug)) return <img alt="" className={`${className} avatar--photo`} src={`${import.meta.env.BASE_URL}avatars/${slug}.jpg`} title={name} />;
+  return <span className={className}>{initials ?? initialsOf(name)}</span>;
+}
 
 function SearchField({ placeholder, value, onChange }: { placeholder: string; value: string; onChange: (value: string) => void }) {
   return (
@@ -2734,7 +2785,7 @@ function AccountDetail({ account, deals, onBack, onOpenDeal }: { account: Accoun
               {accountContacts.length === 0 && <p className="empty-note">No contacts yet.</p>}
               {accountContacts.map((contact) => (
                 <div className="mini-row" key={contact.name}>
-                  <span className="avatar avatar--small">{initialsOf(contact.name)}</span>
+                  <Avatar name={contact.name} size="small" />
                   <span className="mini-copy"><strong>{contact.name}</strong><small>{contact.title}</small></span>
                   <Badge tone={roleTone(contact.role)}>{contact.role}</Badge>
                 </div>
@@ -2775,7 +2826,7 @@ function Contacts() {
           <tbody>
             {visible.map((item) => (
               <tr className={`is-clickable ${item.name === contact.name ? "is-selected" : ""}`} key={item.name} onClick={() => setSelected(item.name)}>
-                <td><span className="company-cell"><span className="avatar avatar--small">{initialsOf(item.name)}</span><span className="case-cell"><strong>{item.name}</strong><small>{item.title}</small></span></span></td>
+                <td><span className="company-cell"><Avatar name={item.name} size="small" /><span className="case-cell"><strong>{item.name}</strong><small>{item.title}</small></span></span></td>
                 <td>{item.account}</td>
                 <td><Badge tone={roleTone(item.role)}>{item.role}</Badge></td>
                 <td className={item.last === "Not met" ? "is-warning" : ""}>{item.last}</td>
@@ -2785,7 +2836,7 @@ function Contacts() {
         </table></div>
       </article>
       <article className="panel contact-card">
-        <span className="avatar avatar--xl">{initialsOf(contact.name)}</span>
+        <Avatar name={contact.name} size="xl" />
         <Heading level={2}>{contact.name}</Heading>
         <p>{contact.title} · {contact.account}</p>
         <Badge tone={roleTone(contact.role)}>{contact.role}</Badge>
@@ -3047,7 +3098,7 @@ function Settings() {
               <tbody>
                 {users.map((user) => (
                   <tr key={user.email}>
-                    <td><span className="company-cell"><span className="avatar avatar--small">{initialsOf(user.name)}</span><span className="case-cell"><strong>{user.name}</strong><small>{user.email}</small></span></span></td>
+                    <td><span className="company-cell"><Avatar name={user.name} size="small" /><span className="case-cell"><strong>{user.name}</strong><small>{user.email}</small></span></span></td>
                     <td><span className="role-select">{user.role} <Icon name="arrow" size={12} /></span></td>
                     <td><Badge tone={user.status === "Active" ? "green" : "amber"}>{user.status}</Badge></td>
                     <td>{user.last}</td>
