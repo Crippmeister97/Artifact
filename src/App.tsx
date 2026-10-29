@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Button, Heading, TextInput } from "./ui";
 
 type IconName =
@@ -936,260 +936,947 @@ function Utilization() {
   );
 }
 
-type ProjectKind = "client" | "internal" | "absence";
-type TimeProject = { name: string; account: string; kind: ProjectKind };
-type TimeType = { name: string; kind: ProjectKind; billable: boolean; confirm?: boolean };
-type TimeEntry = { id: number; day: number; project: string; type: string; task: string; hours: number; billable: boolean };
+// Time entries: the consultant's own week (F12-S04 to S07).
+// The demo is pinned to Thu 29 Oct 2026 so the seeded weeks line up with "today".
+// Time types and billable defaults follow ADR-004 (Zephyr repo, docs/data/time_types.seed.json).
 
-const standardDay = 8;
+type TimeTypeCode =
+  | "client_work"
+  | "overtime"
+  | "internal_project"
+  | "internal_development"
+  | "presales_support"
+  | "support"
+  | "customer_outreach"
+  | "resource_assignment_sales"
+  | "travel"
+  | "vacation"
+  | "absence";
+type TimeType = { code: TimeTypeCode; name: string; billable: boolean; needsProject: boolean; futureOk: boolean };
+type ProjectKind = "client" | "internal";
+type TimeProject = { id: string; name: string; account: string; kind: ProjectKind; closed?: boolean };
+type EntryStatus = "draft" | "submitted" | "approved" | "rejected";
+type TimeEntry = { id: number; date: string; project: string | null; type: TimeTypeCode; minutes: number; comment: string; status: EntryStatus; pmComment?: string };
+type TimeRow = { key: string; project: string | null; type: TimeTypeCode; assigned?: boolean };
+type TimeModal = "copy" | "absence" | "submit" | "addRow" | "actions" | null;
+type TimeSheet = { row: TimeRow; date: string; hours: string; comment: string; error: string };
 
-const timeDays = [
-  { short: "M", name: "Monday", date: "Jun 10" },
-  { short: "T", name: "Tuesday", date: "Jun 11" },
-  { short: "W", name: "Wednesday", date: "Jun 12" },
-  { short: "T", name: "Thursday", date: "Jun 13" },
-  { short: "F", name: "Friday", date: "Jun 14" },
+const TODAY = "2026-10-29";
+const standardDay = 8 * 60;
+const standardWeek = 5 * standardDay;
+const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// The 11 types from ADR-004. Only Client Work and Overtime are billable by default.
+// Vacation and Absence need no project and are the only types allowed ahead of the day.
+const timeTypes: TimeType[] = [
+  { code: "client_work", name: "Client Work", billable: true, needsProject: true, futureOk: false },
+  { code: "overtime", name: "Overtime", billable: true, needsProject: true, futureOk: false },
+  { code: "internal_project", name: "Internal Project", billable: false, needsProject: true, futureOk: false },
+  { code: "internal_development", name: "Internal Development", billable: false, needsProject: true, futureOk: false },
+  { code: "presales_support", name: "Presales Support", billable: false, needsProject: true, futureOk: false },
+  { code: "support", name: "Support", billable: false, needsProject: true, futureOk: false },
+  { code: "customer_outreach", name: "Customer Outreach", billable: false, needsProject: true, futureOk: false },
+  { code: "resource_assignment_sales", name: "Resource Assignment Sales", billable: false, needsProject: true, futureOk: false },
+  { code: "travel", name: "Travel", billable: false, needsProject: true, futureOk: false },
+  { code: "vacation", name: "Vacation", billable: false, needsProject: false, futureOk: true },
+  { code: "absence", name: "Absence", billable: false, needsProject: false, futureOk: true },
 ];
 
-const projectKinds: { kind: ProjectKind; label: string; hint: string }[] = [
-  { kind: "client", label: "Client projects", hint: "client projects" },
-  { kind: "internal", label: "Internal", hint: "internal work" },
-  { kind: "absence", label: "Absence", hint: "absence" },
-];
+// Which types each kind of project offers in "Add row".
+const typesForKind: Record<ProjectKind, TimeTypeCode[]> = {
+  client: ["client_work", "overtime", "travel", "support"],
+  internal: ["internal_project", "internal_development", "presales_support", "customer_outreach", "resource_assignment_sales"],
+};
 
 const timeProjects: TimeProject[] = [
-  { name: "Nova implementation", account: "Nordic Solutions", kind: "client" },
-  { name: "CRM migration", account: "TechVision AB", kind: "client" },
-  { name: "Digital platform 2.0", account: "Bright Digital", kind: "client" },
-  { name: "Service portal", account: "Forma Studio", kind: "client" },
-  { name: "Internal enablement", account: "Sirocco", kind: "internal" },
-  { name: "Absence & leave", account: "Sirocco", kind: "absence" },
+  { id: "nova", name: "Nova implementation", account: "Nordic Solutions", kind: "client" },
+  { id: "crm", name: "CRM migration", account: "TechVision AB", kind: "client" },
+  { id: "digital", name: "Digital platform 2.0", account: "Bright Digital", kind: "client" },
+  { id: "portal", name: "Service portal", account: "Forma Studio", kind: "client", closed: true },
+  { id: "zephyr", name: "Zephyr (internal)", account: "Sirocco", kind: "internal" },
+  { id: "presales", name: "Sales & presales", account: "Sirocco", kind: "internal" },
 ];
 
-// The 12 time types in Dynamics today. Each project kind only offers its own types,
-// and billable is defaulted from the type. Rules marked confirm are proposals for Jack.
-const timeTypes: TimeType[] = [
-  { name: "Client Work", kind: "client", billable: true },
-  { name: "Overtime", kind: "client", billable: true, confirm: true },
-  { name: "Travel", kind: "client", billable: false, confirm: true },
-  { name: "Support", kind: "client", billable: true, confirm: true },
-  { name: "Internal Project", kind: "internal", billable: false },
-  { name: "Internal Development", kind: "internal", billable: false },
-  { name: "Presales Support", kind: "internal", billable: false, confirm: true },
-  { name: "Customer Outreach", kind: "internal", billable: false },
-  { name: "Resource Assignment Sales", kind: "internal", billable: false },
-  { name: "On Break", kind: "internal", billable: false, confirm: true },
-  { name: "Vacation", kind: "absence", billable: false },
-  { name: "Absence", kind: "absence", billable: false },
+// The consultant's team assignments (F11). A closed project or an ended assignment gives no row.
+const myAssignments: { project: string; ends: string | null }[] = [
+  { project: "nova", ends: null },
+  { project: "crm", ends: null },
+  { project: "portal", ends: null },
+  { project: "digital", ends: "2026-09-30" },
 ];
 
-const initialTimeEntries: TimeEntry[] = [
-  { id: 1, day: 0, project: "Nova implementation", type: "Client Work", task: "Data migration workshop", hours: 4.5, billable: true },
-  { id: 2, day: 0, project: "CRM migration", type: "Client Work", task: "Field mapping review", hours: 3.5, billable: true },
-  { id: 3, day: 1, project: "CRM migration", type: "Client Work", task: "Integration testing with SAP", hours: 6, billable: true },
-  { id: 4, day: 1, project: "Internal enablement", type: "Internal Development", task: "Team learning session", hours: 1.5, billable: false },
-  { id: 5, day: 2, project: "Nova implementation", type: "Client Work", task: "Steering group preparation", hours: 3, billable: true },
-  { id: 6, day: 2, project: "Digital platform 2.0", type: "Client Work", task: "Sprint planning", hours: 4, billable: true },
-  { id: 7, day: 2, project: "Internal enablement", type: "Presales Support", task: "Bid review", hours: 1, billable: false },
-  { id: 8, day: 3, project: "Digital platform 2.0", type: "Client Work", task: "Checkout flow build", hours: 8.5, billable: true },
+const seedEntries: [string, string | null, TimeTypeCode, number, EntryStatus, string?, string?][] = [
+  // Week 42: approved
+  ["2026-10-12", "nova", "client_work", 8, "approved"],
+  ["2026-10-13", "nova", "client_work", 8, "approved"],
+  ["2026-10-14", "nova", "client_work", 8, "approved"],
+  ["2026-10-15", "nova", "client_work", 8, "approved"],
+  ["2026-10-16", "nova", "client_work", 8, "approved"],
+  // Week 43: Monday off, Wednesday rejected by the PM, the rest waiting for approval
+  ["2026-10-19", null, "vacation", 8, "approved"],
+  ["2026-10-20", "nova", "client_work", 8, "approved"],
+  ["2026-10-21", "nova", "client_work", 8, "rejected", "", "Wrong project. Wednesday was the CRM migration workshop. /Johanna, PM"],
+  ["2026-10-22", "crm", "client_work", 8, "submitted"],
+  ["2026-10-23", "crm", "client_work", 6, "submitted"],
+  ["2026-10-23", "zephyr", "internal_development", 2, "submitted", "Team learning session"],
+  // Week 44, this week: drafts up to Wednesday, today still empty
+  ["2026-10-26", "nova", "client_work", 8, "draft"],
+  ["2026-10-27", "nova", "client_work", 4, "draft", "Workshop prep"],
+  ["2026-10-27", "crm", "client_work", 4, "draft"],
+  ["2026-10-28", "nova", "client_work", 7.5, "draft"],
+  ["2026-10-28", "zephyr", "internal_development", 0.5, "draft", "Sprint demo"],
 ];
 
-function hoursOnDay(entries: TimeEntry[], day: number) {
-  return entries.filter((entry) => entry.day === day).reduce((sum, entry) => sum + entry.hours, 0);
+const initialTimeEntries: TimeEntry[] = seedEntries.map(([date, project, type, hours, status, comment = "", pmComment], index) => ({
+  id: index + 1,
+  date,
+  project,
+  type,
+  minutes: hours * 60,
+  comment,
+  status,
+  pmComment,
+}));
+
+const statusLabel: Record<EntryStatus, string> = { draft: "Draft", submitted: "Submitted", approved: "Approved", rejected: "Rejected" };
+
+const typeOf = (code: TimeTypeCode) => timeTypes.find((item) => item.code === code) ?? timeTypes[0];
+const projectOf = (id: string | null) => timeProjects.find((item) => item.id === id);
+const rowKey = (project: string | null, type: TimeTypeCode) => `${project ?? "none"}|${type}`;
+const rowName = (row: TimeRow) => projectOf(row.project)?.name ?? typeOf(row.type).name;
+const cellId = (row: string, date: string) => `${row}@${date}`;
+const isEditable = (entry?: TimeEntry) => !entry || entry.status === "draft" || entry.status === "rejected";
+const sumMinutes = (list: TimeEntry[]) => list.reduce((sum, entry) => sum + entry.minutes, 0);
+const nextId = (list: TimeEntry[]) => Math.max(0, ...list.map((entry) => entry.id)) + 1;
+const fmtH = (minutes: number) => String(Math.round((minutes / 60) * 100) / 100);
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+const toDate = (iso: string) => new Date(`${iso}T00:00:00Z`);
+function addDays(iso: string, days: number) {
+  const date = toDate(iso);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+const dayIndex = (iso: string) => (toDate(iso).getUTCDay() + 6) % 7;
+const mondayOf = (iso: string) => addDays(iso, -dayIndex(iso));
+const isWeekend = (iso: string) => dayIndex(iso) > 4;
+const weekDates = (monday: string) => Array.from({ length: 7 }, (_, index) => addDays(monday, index));
+function isoWeek(iso: string) {
+  const thursday = toDate(addDays(mondayOf(iso), 3));
+  return Math.floor((thursday.getTime() - Date.UTC(thursday.getUTCFullYear(), 0, 1)) / 86400000 / 7) + 1;
+}
+const shortDate = (iso: string) => `${toDate(iso).getUTCDate()} ${monthNames[toDate(iso).getUTCMonth()]}`;
+const fmtDay = (iso: string) => `${dayNames[dayIndex(iso)].slice(0, 3)} ${shortDate(iso)}`;
+const fmtLongDay = (iso: string) => `${dayNames[dayIndex(iso)]} ${shortDate(iso)}`;
+
+function omit<T>(record: Record<string, T>, key: string) {
+  const next = { ...record };
+  delete next[key];
+  return next;
 }
 
-function EntryForm({ entries, defaultDay, autoFocus, onSave }: { entries: TimeEntry[]; defaultDay: number; autoFocus?: boolean; onSave: (entry: Omit<TimeEntry, "id">) => void }) {
-  const [project, setProject] = useState("");
-  const [type, setType] = useState("");
-  const [day, setDay] = useState(defaultDay);
-  const [hours, setHours] = useState("");
-  const [task, setTask] = useState("");
-  const [billable, setBillable] = useState(false);
-  const [error, setError] = useState("");
-  const [saved, setSaved] = useState("");
+// Accepts 7.5 and 7,5. Same rules as TimeEntryRules in the Zephyr repo: 15-minute steps, at most 24 h.
+function parseHours(text: string): { minutes: number } | { error: string } {
+  const clean = text.trim().replace(",", ".");
+  if (!clean) return { minutes: 0 };
+  const value = Number(clean);
+  if (!Number.isFinite(value) || value < 0) return { error: "Enter hours as a number, e.g. 7.5 or 7,5." };
+  const minutes = Math.round(value * 60);
+  if (minutes % 15) return { error: "Use 15-minute steps, e.g. 7.25 or 7.5." };
+  if (minutes > 24 * 60) return { error: "One entry can't be more than 24 h." };
+  return { minutes };
+}
 
-  const kind = timeProjects.find((item) => item.name === project)?.kind;
-  const types = timeTypes.filter((item) => item.kind === kind);
-  const rule = timeTypes.find((item) => item.name === type);
-  const left = Math.max(0, standardDay - hoursOnDay(entries, day));
+function cellLock(entry: TimeEntry | undefined, type: TimeTypeCode, date: string) {
+  if (entry?.status === "submitted") return "Submitted, waiting for approval";
+  if (entry?.status === "approved") return "Approved and locked";
+  if (!entry && date > TODAY && !typeOf(type).futureOk) return `${typeOf(type).name} can't be logged ahead of the day`;
+  return "";
+}
 
-  function chooseProject(name: string) {
-    const nextKind = timeProjects.find((item) => item.name === name)?.kind;
-    const firstType = timeTypes.find((item) => item.kind === nextKind);
-    setProject(name);
-    setType(firstType?.name ?? "");
-    setBillable(firstType?.billable ?? false);
-    setError("");
-    setSaved("");
+function weekStatus(list: TimeEntry[]) {
+  if (!list.length) return { label: "Nothing logged", tone: "slate" };
+  if (list.some((entry) => entry.status === "rejected")) return { label: "Needs changes", tone: "red" };
+  if (list.some((entry) => entry.status === "draft")) {
+    const rest = list.some((entry) => entry.status === "approved") ? " · partly approved" : list.some((entry) => entry.status === "submitted") ? " · partly submitted" : "";
+    return { label: `Draft${rest}`, tone: "sand" };
   }
+  if (list.every((entry) => entry.status === "approved")) return { label: "Approved", tone: "green" };
+  if (list.some((entry) => entry.status === "approved")) return { label: "Partly approved", tone: "violet" };
+  return { label: "Submitted", tone: "blue" };
+}
 
-  function chooseType(name: string) {
-    setType(name);
-    setBillable(timeTypes.find((item) => item.name === name)?.billable ?? false);
-    setSaved("");
+function activeAssignments(monday: string) {
+  return myAssignments.filter((item) => !projectOf(item.project)?.closed && (!item.ends || item.ends >= monday));
+}
+
+// Rows: active assignments first (as Client Work), then rows that already have time this week, then rows added by hand.
+function rowsForWeek(monday: string, weekEntries: TimeEntry[], added: TimeRow[]) {
+  const rows = new Map<string, TimeRow>();
+  for (const item of activeAssignments(monday)) {
+    const key = rowKey(item.project, "client_work");
+    rows.set(key, { key, project: item.project, type: "client_work", assigned: true });
   }
-
-  function save() {
-    const value = Number(hours.replace(",", "."));
-    if (!project || !type) return setError("Choose a project and a type.");
-    if (!value || value <= 0) return setError("Enter the hours you worked.");
-    if (Math.round(value * 4) !== value * 4) return setError("Use 15-minute steps, e.g. 1.25 or 2.5.");
-    if (hoursOnDay(entries, day) + value > 24) return setError(`That would be more than 24 h on ${timeDays[day].name}.`);
-    onSave({ day, project, type, task: task.trim() || type, hours: value, billable });
-    setSaved(`Saved ${value.toFixed(2).replace(/0$/, "")} h ${type} on ${timeDays[day].name}.`);
-    setProject("");
-    setType("");
-    setHours("");
-    setTask("");
-    setBillable(false);
-    setError("");
+  const order = (code: TimeTypeCode) => timeTypes.findIndex((item) => item.code === code);
+  for (const entry of [...weekEntries].sort((a, b) => order(a.type) - order(b.type))) {
+    const key = rowKey(entry.project, entry.type);
+    if (!rows.has(key)) rows.set(key, { key, project: entry.project, type: entry.type });
   }
+  for (const row of added) if (!rows.has(row.key)) rows.set(row.key, row);
+  return [...rows.values()];
+}
 
-  const billableHint = !rule
-    ? "Set automatically from the type"
-    : billable === rule.billable
-      ? `Set from ${rule.name}${rule.confirm ? " · rule to confirm with Jack" : ""}`
-      : `Changed by you · ${rule.name} is normally ${rule.billable ? "billable" : "not billable"}`;
-
-  return (
-    <>
-      <div className="form-grid">
-        <label className="field field--wide">
-          <span>1 · Project</span>
-          <select autoFocus={autoFocus} value={project} onChange={(event) => chooseProject(event.target.value)}>
-            <option value="">Choose a project</option>
-            {projectKinds.map((group) => (
-              <optgroup key={group.kind} label={group.label}>
-                {timeProjects.filter((item) => item.kind === group.kind).map((item) => <option key={item.name} value={item.name}>{item.name} · {item.account}</option>)}
-              </optgroup>
-            ))}
-          </select>
-        </label>
-        <label className="field field--wide">
-          <span>2 · Type of work</span>
-          <select disabled={!project} value={type} onChange={(event) => chooseType(event.target.value)}>
-            {!project && <option value="">Choose a project first</option>}
-            {types.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-          </select>
-          {project && <small className="field-hint">Showing the types for {projectKinds.find((group) => group.kind === kind)?.hint}</small>}
-        </label>
-        <label className="field">
-          <span>Day</span>
-          <select value={day} onChange={(event) => { setDay(Number(event.target.value)); setSaved(""); }}>
-            {timeDays.map((item, index) => <option key={item.name} value={index}>{item.name.slice(0, 3)}, {item.date}</option>)}
-          </select>
-        </label>
-        <label className="field">
-          <span>Hours</span>
-          <TextInput inputMode="decimal" placeholder={left ? left.toFixed(1) : "0.0"} value={hours} onChange={(event) => { setHours(event.target.value); setSaved(""); }} />
-        </label>
-        <div className="field--wide day-left">
-          {left > 0 ? (
-            <>
-              <span>{timeDays[day].name}: {left.toFixed(1)} h left of {standardDay} h</span>
-              <Button className="text-button" type="button" onClick={() => setHours(String(left))}>Fill {left.toFixed(1)} h</Button>
-            </>
-          ) : (
-            <span>{timeDays[day].name} is full ({standardDay} h logged)</span>
-          )}
-        </div>
-        <label className="field field--wide">
-          <span>Description</span>
-          <TextInput placeholder="What did you work on?" value={task} onChange={(event) => setTask(event.target.value)} />
-        </label>
-        <div className="field--wide">
-          <button
-            aria-checked={billable}
-            className="toggle toggle-button"
-            disabled={!type || kind === "absence"}
-            onClick={() => setBillable(!billable)}
-            role="switch"
-            type="button"
-          >
-            <span className={`toggle-switch ${billable ? "is-on" : ""}`}><i /></span>Billable
-          </button>
-          <small className="field-hint">{billableHint}</small>
-        </div>
-      </div>
-      {error && <p className="form-message form-message--error" role="alert">{error}</p>}
-      {saved && <p className="form-message form-message--saved" role="status">{saved}</p>}
-      <Button className="primary-button compact full" onClick={save} type="button">Save entry</Button>
-    </>
-  );
+function useNarrow(query = "(max-width: 767px)") {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setNarrow(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+  return narrow;
 }
 
 function TimeEntries() {
+  const narrow = useNarrow();
   const [entries, setEntries] = useState(initialTimeEntries);
-  const [adding, setAdding] = useState(false);
-  const [lastId, setLastId] = useState<number | null>(null);
-  const total = entries.reduce((sum, entry) => sum + entry.hours, 0);
-  const days = timeDays.map((_, index) => hoursOnDay(entries, index));
+  const [weekStart, setWeekStart] = useState(mondayOf(TODAY));
+  const [addedRows, setAddedRows] = useState<Record<string, TimeRow[]>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [selected, setSelected] = useState<{ row: string; date: string } | null>(null);
+  const [modal, setModal] = useState<TimeModal>(null);
+  const [sheet, setSheet] = useState<TimeSheet | null>(null);
+  const [toast, setToast] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [focusRow, setFocusRow] = useState("");
+  const [copyHours, setCopyHours] = useState(false);
+  const [absence, setAbsence] = useState({ type: "vacation" as TimeTypeCode, from: TODAY, to: TODAY, hours: "8", error: "" });
+  const [rowQuery, setRowQuery] = useState("");
+  const [mobileDay, setMobileDay] = useState(TODAY);
+  const tableRef = useRef<HTMLTableElement>(null);
+
+  const dates = weekDates(weekStart);
+  const inWeek = entries.filter((entry) => entry.date >= dates[0] && entry.date <= dates[6]);
+  const rows = rowsForWeek(weekStart, inWeek, addedRows[weekStart] ?? []);
+  const total = sumMinutes(inWeek);
+  const billable = sumMinutes(inWeek.filter((entry) => typeOf(entry.type).billable));
+  const status = weekStatus(inWeek);
+  const toSubmit = inWeek.filter((entry) => entry.status === "draft" || entry.status === "rejected");
+  const canRecall = inWeek.some((entry) => entry.status === "submitted");
+  const weekLabel = `Week ${isoWeek(weekStart)}`;
+  const rangeLabel = `${shortDate(dates[0])} – ${shortDate(dates[6])}`;
+  const day = dates.includes(mobileDay) ? mobileDay : dates[0];
+  const assignedCount = activeAssignments(weekStart).length;
+  const hiddenCount = myAssignments.length - assignedCount;
+
+  const entryAt = (row: TimeRow, date: string) => inWeek.find((entry) => entry.date === date && rowKey(entry.project, entry.type) === row.key);
+  const dayMinutes = (date: string) => sumMinutes(inWeek.filter((entry) => entry.date === date));
+  const dayTone = (minutes: number) => (minutes > 24 * 60 ? "is-error" : minutes > 10 * 60 ? "is-warn" : minutes >= standardDay ? "is-met" : "");
+  const canFill = (row: TimeRow) =>
+    typeOf(row.type).needsProject && dates.some((date) => !isWeekend(date) && !entryAt(row, date) && !cellLock(undefined, row.type, date) && dayMinutes(date) < standardDay);
 
   useEffect(() => {
-    if (!adding) return;
-    const close = (event: KeyboardEvent) => event.key === "Escape" && setAdding(false);
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 4500);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    if (!modal && !sheet) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setModal(null);
+      setSheet(null);
+    };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [adding]);
+  }, [modal, sheet]);
 
-  function save(entry: Omit<TimeEntry, "id">) {
-    const id = Math.max(0, ...entries.map((item) => item.id)) + 1;
-    setEntries((current) => [...current, { ...entry, id }]);
-    setLastId(id);
-    setAdding(false);
+  useEffect(() => {
+    if (!focusRow) return;
+    tableRef.current?.querySelector<HTMLInputElement>(`input[data-row="${focusRow}"]:not([tabindex="-1"])`)?.focus();
+    setFocusRow("");
+  }, [focusRow]);
+
+  function writeCell(row: TimeRow, date: string, minutes: number, comment?: string) {
+    const existing = entryAt(row, date);
+    if (!isEditable(existing)) return;
+    if (!minutes) setEntries(existing ? entries.filter((entry) => entry.id !== existing.id) : entries);
+    else if (existing) setEntries(entries.map((entry) => (entry.id === existing.id ? { ...entry, minutes, comment: comment ?? entry.comment, status: "draft" as EntryStatus } : entry)));
+    else setEntries([...entries, { id: nextId(entries), date, project: row.project, type: row.type, minutes, comment: comment ?? "", status: "draft" }]);
+    setSaved(true);
   }
+
+  function commitCell(row: TimeRow, date: string) {
+    const id = cellId(row.key, date);
+    const text = drafts[id];
+    if (text === undefined) return;
+    const parsed = parseHours(text);
+    if ("error" in parsed) return setErrors({ ...errors, [id]: parsed.error });
+    setDrafts(omit(drafts, id));
+    setErrors(omit(errors, id));
+    if ((entryAt(row, date)?.minutes ?? 0) !== parsed.minutes) writeCell(row, date, parsed.minutes);
+  }
+
+  function setComment(id: number, comment: string) {
+    setEntries(entries.map((entry) => (entry.id === id ? { ...entry, comment } : entry)));
+    setSaved(true);
+  }
+
+  function moveFocus(row: number, col: number, dRow: number, dCol: number) {
+    for (let r = row + dRow, c = col + dCol; r >= 0 && r < rows.length && c >= 0 && c < 7; r += dRow, c += dCol) {
+      const input = tableRef.current?.querySelector<HTMLInputElement>(`input[data-cell="${r}:${c}"]`);
+      if (input && input.tabIndex !== -1) {
+        input.focus();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Tab and Shift+Tab work as usual; arrows move between cells and Enter moves down, like a spreadsheet.
+  function onCellKey(event: ReactKeyboardEvent<HTMLInputElement>, row: number, col: number, id: string) {
+    const input = event.currentTarget;
+    if (event.key === "Escape") {
+      setDrafts(omit(drafts, id));
+      setErrors(omit(errors, id));
+      return;
+    }
+    const moves: Record<string, [number, number] | undefined> = {
+      ArrowUp: [-1, 0],
+      ArrowDown: [1, 0],
+      Enter: [1, 0],
+      ArrowLeft: input.selectionStart === 0 ? [0, -1] : undefined,
+      ArrowRight: input.selectionEnd === input.value.length ? [0, 1] : undefined,
+    };
+    const move = moves[event.key];
+    if (!move) return;
+    event.preventDefault();
+    if (!moveFocus(row, col, ...move) && event.key === "Enter") {
+      input.blur();
+      input.focus();
+    }
+  }
+
+  // Most consultants bill a whole day to one customer, so one click fills each open weekday up to 8 h.
+  function fillRow(row: TimeRow) {
+    let next = entries;
+    let filled = 0;
+    for (const date of dates.filter((item) => !isWeekend(item))) {
+      if (entryAt(row, date) || cellLock(undefined, row.type, date)) continue;
+      const left = standardDay - sumMinutes(next.filter((entry) => entry.date === date));
+      if (left <= 0) continue;
+      next = [...next, { id: nextId(next), date, project: row.project, type: row.type, minutes: left, comment: "", status: "draft" }];
+      filled += left;
+    }
+    setEntries(next);
+    setToast(filled ? `Filled ${fmtH(filled)} h on ${rowName(row)}, so each open weekday has 8 h.` : "Nothing to fill: the open weekdays already have 8 h.");
+    if (filled) setSaved(true);
+  }
+
+  function copyLastWeek() {
+    const lastStart = addDays(weekStart, -7);
+    const last = entries.filter((entry) => entry.date >= lastStart && entry.date < weekStart);
+    setModal(null);
+    if (!last.length) return setToast(`Week ${isoWeek(lastStart)} is empty, so there was nothing to copy.`);
+    const copyable = last.filter((entry) => typeOf(entry.type).needsProject);
+    const newRows: TimeRow[] = [];
+    for (const entry of copyable) {
+      const key = rowKey(entry.project, entry.type);
+      if (!rows.some((row) => row.key === key) && !newRows.some((row) => row.key === key)) newRows.push({ key, project: entry.project, type: entry.type });
+    }
+    setAddedRows({ ...addedRows, [weekStart]: [...(addedRows[weekStart] ?? []), ...newRows] });
+    let next = entries;
+    let created = 0;
+    let kept = 0;
+    let ahead = 0;
+    if (copyHours) {
+      for (const entry of copyable) {
+        const date = addDays(entry.date, 7);
+        const key = rowKey(entry.project, entry.type);
+        if (next.some((item) => item.date === date && rowKey(item.project, item.type) === key)) kept++;
+        else if (cellLock(undefined, entry.type, date)) ahead++;
+        else {
+          next = [...next, { id: nextId(next), date, project: entry.project, type: entry.type, minutes: entry.minutes, comment: "", status: "draft" }];
+          created++;
+        }
+      }
+    }
+    setEntries(next);
+    if (created) setSaved(true);
+    const rowCount = new Set(copyable.map((entry) => rowKey(entry.project, entry.type))).size;
+    const parts = [`Copied ${plural(rowCount, "row", "rows")} from week ${isoWeek(lastStart)}${copyHours ? ` with ${plural(created, "entry", "entries")}` : ""}.`];
+    if (copyable.length < last.length) parts.push("Vacation and absence aren't copied.");
+    if (kept) parts.push(`${plural(kept, "cell you'd filled was", "cells you'd filled were")} kept.`);
+    if (ahead) parts.push(`${plural(ahead, "day is", "days are")} ahead of today and left empty.`);
+    setToast(parts.join(" "));
+  }
+
+  function openAbsence() {
+    const start = dates.includes(TODAY) ? TODAY : weekStart;
+    setAbsence({ type: "vacation", from: start, to: start, hours: "8", error: "" });
+    setModal("absence");
+  }
+
+  function absenceDays() {
+    const days: string[] = [];
+    if (!absence.from || !absence.to || absence.from > absence.to) return days;
+    for (let date = absence.from, guard = 0; date <= absence.to && guard < 400; date = addDays(date, 1), guard++) if (!isWeekend(date)) days.push(date);
+    return days;
+  }
+
+  function addAbsence() {
+    const parsed = parseHours(absence.hours);
+    const days = absenceDays();
+    if (!absence.from || !absence.to || absence.from > absence.to) return setAbsence({ ...absence, error: "Pick a from date on or before the to date." });
+    if ("error" in parsed || !parsed.minutes) return setAbsence({ ...absence, error: "error" in parsed ? parsed.error : "Enter the hours per day, e.g. 8, or 4 for half a day." });
+    if (!days.length) return setAbsence({ ...absence, error: "Those dates are all on a weekend." });
+    let next = entries;
+    let created = 0;
+    for (const date of days) {
+      if (next.some((entry) => entry.date === date && entry.type === absence.type && entry.project === null)) continue;
+      next = [...next, { id: nextId(next), date, project: null, type: absence.type, minutes: parsed.minutes, comment: "", status: "draft" }];
+      created++;
+    }
+    setEntries(next);
+    setModal(null);
+    setSaved(true);
+    const weeks = new Set(days.map(mondayOf)).size;
+    setToast(
+      `Added ${plural(created, "day", "days")} of ${typeOf(absence.type).name.toLowerCase()} (${fmtH(created * parsed.minutes)} h) as Draft${weeks > 1 ? ` across ${weeks} weeks` : ""}.` +
+        (created < days.length ? " Days that already had it were kept." : ""),
+    );
+  }
+
+  function submitWeek() {
+    const ids = new Set(toSubmit.map((entry) => entry.id));
+    setEntries(entries.map((entry) => (ids.has(entry.id) ? { ...entry, status: "submitted" as EntryStatus } : entry)));
+    setModal(null);
+    setToast(`${weekLabel} is submitted. Your project managers can now approve it.`);
+  }
+
+  function recallWeek() {
+    const recalled = inWeek.filter((entry) => entry.status === "submitted");
+    const ids = new Set(recalled.map((entry) => entry.id));
+    setEntries(entries.map((entry) => (ids.has(entry.id) ? { ...entry, status: "draft" as EntryStatus } : entry)));
+    setModal(null);
+    setToast(`${plural(recalled.length, "entry is", "entries are")} back in Draft.${inWeek.some((entry) => entry.status === "approved") ? " Approved entries stay locked." : ""}`);
+  }
+
+  function addRow(row: TimeRow) {
+    setAddedRows({ ...addedRows, [weekStart]: [...(addedRows[weekStart] ?? []), row] });
+    setModal(null);
+    setRowQuery("");
+    if (!narrow) setFocusRow(row.key);
+    else if (!cellLock(undefined, row.type, day)) openSheet(row, day);
+  }
+
+  function removeRow(row: TimeRow) {
+    setAddedRows({ ...addedRows, [weekStart]: (addedRows[weekStart] ?? []).filter((item) => item.key !== row.key) });
+  }
+
+  function openSheet(row: TimeRow, date: string) {
+    const entry = entryAt(row, date);
+    setSheet({ row, date, hours: entry ? fmtH(entry.minutes) : "", comment: entry?.comment ?? "", error: "" });
+  }
+
+  function saveSheet() {
+    if (!sheet) return;
+    const parsed = parseHours(sheet.hours);
+    if ("error" in parsed) return setSheet({ ...sheet, error: parsed.error });
+    writeCell(sheet.row, sheet.date, parsed.minutes, sheet.comment.trim());
+    setSheet(null);
+  }
+
+  function goWeek(step: number) {
+    setWeekStart(addDays(weekStart, step * 7));
+    setMobileDay(addDays(day, step * 7));
+    setSelected(null);
+  }
+
+  function goDay(step: number) {
+    const next = addDays(day, step);
+    setMobileDay(next);
+    setWeekStart(mondayOf(next));
+  }
+
+  function goToday() {
+    setWeekStart(mondayOf(TODAY));
+    setMobileDay(TODAY);
+    setSelected(null);
+  }
+
+  const usableProjects = [...activeAssignments(weekStart).map((item) => projectOf(item.project)), ...timeProjects.filter((item) => item.kind === "internal")].filter(
+    (item): item is TimeProject => !!item,
+  );
+  const query = rowQuery.trim().toLowerCase();
+  const rowOptions: TimeRow[] = [
+    ...usableProjects.flatMap((project) => typesForKind[project.kind].map((type) => ({ key: rowKey(project.id, type), project: project.id, type }))),
+    ...timeTypes.filter((type) => !type.needsProject).map((type) => ({ key: rowKey(null, type.code), project: null, type: type.code })),
+  ]
+    .filter((option) => !rows.some((row) => row.key === option.key))
+    .filter((option) => {
+      const project = projectOf(option.project);
+      return !query || `${project?.name ?? ""} ${project?.account ?? ""} ${typeOf(option.type).name}`.toLowerCase().includes(query);
+    });
+
+  const absenceList = absenceDays();
+  const absenceMinutes = parseHours(absence.hours);
+  const blockers = [
+    ...dates.filter((date) => dayMinutes(date) > 24 * 60).map((date) => `${fmtDay(date)} has ${fmtH(dayMinutes(date))} h. A day can't have more than 24 h.`),
+    ...(Object.keys(errors).some((id) => dates.some((date) => id.endsWith(`@${date}`))) ? ["Some cells have a value that isn't saved. Fix the red cells first."] : []),
+  ];
+  const warnings = [
+    ...dates.filter((date) => dayMinutes(date) > 10 * 60 && dayMinutes(date) <= 24 * 60).map((date) => `${fmtDay(date)} has ${fmtH(dayMinutes(date))} h, more than 10 h.`),
+    ...(total < standardWeek ? [`${fmtH(total)} h is below the 40 h standard week.`] : []),
+  ];
+
+  const modalHead = (title: string, text: string, onClose = () => setModal(null)) => (
+    <div className="panel-heading">
+      <div><Heading level={2}>{title}</Heading><p>{text}</p></div>
+      <Button aria-label="Close" className="icon-button small" onClick={onClose}><Icon name="close" size={15} /></Button>
+    </div>
+  );
+
+  const modalBody = () => {
+    if (modal === "copy")
+      return (
+        <>
+          {modalHead("Copy last week", `Rows from week ${isoWeek(addDays(weekStart, -7))} come in as Draft.`)}
+          <p className="tw-lead">Vacation and absence are never copied, and cells you've already filled are never changed.</p>
+          <button aria-checked={copyHours} className="toggle toggle-button" onClick={() => setCopyHours(!copyHours)} role="switch" type="button">
+            <span className={`toggle-switch ${copyHours ? "is-on" : ""}`}><i /></span>Include hours
+          </button>
+          <Button className="primary-button compact full tw-confirm" onClick={copyLastWeek}>{copyHours ? "Copy rows and hours" : "Copy rows"}</Button>
+        </>
+      );
+    if (modal === "absence")
+      return (
+        <>
+          {modalHead("Vacation or absence", "One entry per weekday, as Draft. The range can span several weeks.")}
+          <div className="tw-segment" role="radiogroup">
+            {timeTypes.filter((type) => !type.needsProject).map((type) => (
+              <button aria-checked={absence.type === type.code} className={absence.type === type.code ? "is-active" : ""} key={type.code} onClick={() => setAbsence({ ...absence, type: type.code, error: "" })} role="radio" type="button">
+                {type.name}
+              </button>
+            ))}
+          </div>
+          <div className="form-grid">
+            <label className="field">
+              <span>From</span>
+              <TextInput onChange={(event) => setAbsence({ ...absence, from: event.target.value, to: absence.to < event.target.value ? event.target.value : absence.to, error: "" })} type="date" value={absence.from} />
+            </label>
+            <label className="field">
+              <span>To</span>
+              <TextInput min={absence.from} onChange={(event) => setAbsence({ ...absence, to: event.target.value, error: "" })} type="date" value={absence.to} />
+            </label>
+            <label className="field field--wide">
+              <span>Hours per day</span>
+              <TextInput inputMode="decimal" onChange={(event) => setAbsence({ ...absence, hours: event.target.value, error: "" })} value={absence.hours} />
+              <small className="field-hint">Your standard day is 8 h. Use 4 for half a day. Weekends are skipped.</small>
+            </label>
+          </div>
+          {absence.error ? (
+            <p className="form-message form-message--error" role="alert">{absence.error}</p>
+          ) : (
+            <p className="tw-preview">
+              {absenceList.length && "minutes" in absenceMinutes
+                ? `${plural(absenceList.length, "weekday", "weekdays")} · ${fmtH(absenceList.length * absenceMinutes.minutes)} h${new Set(absenceList.map(mondayOf)).size > 1 ? ` across ${new Set(absenceList.map(mondayOf)).size} weeks` : ""}`
+                : "No weekdays in this range yet."}
+            </p>
+          )}
+          <Button className="primary-button compact full" onClick={addAbsence}>Add {typeOf(absence.type).name.toLowerCase()}</Button>
+        </>
+      );
+    if (modal === "submit")
+      return (
+        <>
+          {modalHead(`Submit ${weekLabel.toLowerCase()}`, rangeLabel)}
+          {!inWeek.length ? (
+            <>
+              <p className="tw-msg tw-msg--info">There's nothing to submit this week. Were you away? Log vacation or absence instead, so nobody chases you for hours.</p>
+              <Button className="primary-button compact full" onClick={openAbsence}><Icon name="calendar" size={15} /> Add vacation or absence</Button>
+            </>
+          ) : !toSubmit.length ? (
+            <p className="tw-msg tw-msg--info">Everything this week is already submitted.</p>
+          ) : (
+            <>
+              <div className="tw-summary">
+                <div><span>Week total</span><strong>{fmtH(total)} h</strong></div>
+                <div><span>Billable</span><strong>{fmtH(billable)} h</strong></div>
+                <div><span>Not billable</span><strong>{fmtH(total - billable)} h</strong></div>
+              </div>
+              {blockers.map((text) => <p className="tw-msg tw-msg--error" key={text}>{text}</p>)}
+              {warnings.map((text) => <p className="tw-msg tw-msg--warn" key={text}>{text}</p>)}
+              <p className="tw-lead">{plural(toSubmit.length, "entry goes", "entries go")} to your project managers for approval. You can recall them until they're approved.</p>
+              <Button className="primary-button compact full" disabled={blockers.length > 0} onClick={submitWeek}>
+                {blockers.length ? "Fix the errors to submit" : "Submit week"}
+              </Button>
+            </>
+          )}
+        </>
+      );
+    if (modal === "addRow")
+      return (
+        <>
+          {modalHead("Add a row", "Search for a project or a type of work.")}
+          <label className="field tw-search">
+            <span>Project or type</span>
+            <TextInput
+              autoFocus
+              onChange={(event) => setRowQuery(event.target.value)}
+              onKeyDown={(event) => event.key === "Enter" && rowOptions[0] && addRow(rowOptions[0])}
+              placeholder="e.g. Zephyr, travel, vacation"
+              value={rowQuery}
+            />
+          </label>
+          <div className="tw-options">
+            {rowOptions.length ? (
+              rowOptions.slice(0, 12).map((option) => {
+                const project = projectOf(option.project);
+                const type = typeOf(option.type);
+                return (
+                  <button className="tw-option" key={option.key} onClick={() => addRow(option)} type="button">
+                    <strong>{project ? `${project.name} · ${type.name}` : type.name}</strong>
+                    <small>{project ? `${project.account}${type.billable ? " · billable" : ""}` : "No project needed"}</small>
+                  </button>
+                );
+              })
+            ) : (
+              <p className="tw-hint">No match. Only projects you're assigned to and internal projects are listed.</p>
+            )}
+          </div>
+        </>
+      );
+    return (
+      <>
+        {modalHead("Week actions", `${weekLabel} · ${rangeLabel}`)}
+        <div className="td-actions">
+          <Button className="secondary-button" onClick={() => setModal("copy")}>Copy last week</Button>
+          <Button className="secondary-button" onClick={openAbsence}><Icon name="calendar" size={15} /> Vacation or absence</Button>
+          <Button className="secondary-button" onClick={() => setModal("submit")}><Icon name="check" size={15} /> Submit week</Button>
+          <Button className="secondary-button" disabled={!canRecall} onClick={recallWeek}>Recall submitted entries</Button>
+        </div>
+      </>
+    );
+  };
+
+  const sheetBody = (current: TimeSheet) => {
+    const entry = entryAt(current.row, current.date);
+    const lock = cellLock(entry, current.row.type, current.date);
+    const type = typeOf(current.row.type);
+    const project = projectOf(current.row.project);
+    const left = standardDay - (dayMinutes(current.date) - (entry?.minutes ?? 0));
+    const chips = [8 * 60, 4 * 60, ...(left > 0 && left !== 8 * 60 && left !== 4 * 60 ? [left] : [])];
+    return (
+      <>
+        {modalHead(project?.name ?? type.name, `${project ? `${type.name} · ` : ""}${fmtLongDay(current.date)}`, () => setSheet(null))}
+        {entry?.pmComment && <p className="tw-msg tw-msg--error"><b>Rejected by your PM:</b> {entry.pmComment}</p>}
+        {lock ? (
+          <>
+            <p className="tw-msg tw-msg--info">{entry ? `${fmtH(entry.minutes)} h · ${lock}.` : `${lock}.`}</p>
+            {entry?.comment && <p className="tw-lead">“{entry.comment}”</p>}
+          </>
+        ) : (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveSheet();
+            }}
+          >
+            <label className="field">
+              <span>Hours</span>
+              <TextInput autoFocus enterKeyHint="done" inputMode="decimal" onChange={(event) => setSheet({ ...current, hours: event.target.value, error: "" })} placeholder="0" value={current.hours} />
+            </label>
+            <div className="td-chips">
+              {chips.map((minutes, index) => (
+                <button key={minutes} onClick={() => setSheet({ ...current, hours: fmtH(minutes), error: "" })} type="button">
+                  {index === 2 ? `Rest of day · ${fmtH(minutes)} h` : `${fmtH(minutes)} h`}
+                </button>
+              ))}
+            </div>
+            <label className="field">
+              <span>Comment</span>
+              <TextInput maxLength={500} onChange={(event) => setSheet({ ...current, comment: event.target.value })} placeholder="Optional" value={current.comment} />
+            </label>
+            {current.error && <p className="form-message form-message--error" role="alert">{current.error}</p>}
+            <Button className="primary-button full tw-done" type="submit">Done</Button>
+            {entry && (
+              <Button
+                className="text-button tw-remove-entry"
+                onClick={() => {
+                  writeCell(current.row, current.date, 0);
+                  setSheet(null);
+                }}
+                type="button"
+              >
+                Remove this entry
+              </Button>
+            )}
+          </form>
+        )}
+      </>
+    );
+  };
+
+  const overlays = (
+    <>
+      {modal && (
+        <div className="modal-backdrop tw-sheet" onClick={() => setModal(null)}>
+          <div aria-modal="true" className="modal-card" onClick={(event) => event.stopPropagation()} role="dialog">{modalBody()}</div>
+        </div>
+      )}
+      {sheet && (
+        <div className="modal-backdrop tw-sheet" onClick={() => setSheet(null)}>
+          <div aria-modal="true" className="modal-card" onClick={(event) => event.stopPropagation()} role="dialog">{sheetBody(sheet)}</div>
+        </div>
+      )}
+      {toast && <div className="tw-toast" role="status">{toast}</div>}
+    </>
+  );
+
+  if (narrow)
+    return (
+      <>
+        <section className="td-head">
+          <div className="td-week">
+            <Button aria-label="Previous week" className="icon-button small" onClick={() => goWeek(-1)}><Icon name="arrow" size={15} /></Button>
+            <div><strong>{weekLabel}</strong><small>{rangeLabel}</small></div>
+            <Button aria-label="Next week" className="icon-button small" onClick={() => goWeek(1)}><Icon name="arrow" size={15} /></Button>
+          </div>
+          <div className="td-sum"><Badge tone={status.tone}>{status.label}</Badge><span>{fmtH(total)} / 40 h</span></div>
+        </section>
+        <div className="td-days">
+          {dates.map((date) => (
+            <button
+              aria-pressed={date === day}
+              className={["td-day", date === day && "is-active", isWeekend(date) && "is-weekend", date === TODAY && "is-today"].filter(Boolean).join(" ")}
+              key={date}
+              onClick={() => setMobileDay(date)}
+              type="button"
+            >
+              <span>{dayNames[dayIndex(date)].slice(0, 2)} {toDate(date).getUTCDate()}</span>
+              <b className={dayTone(dayMinutes(date))}>{dayMinutes(date) ? fmtH(dayMinutes(date)) : "–"}</b>
+            </button>
+          ))}
+        </div>
+        <section className="panel td-card">
+          <div className="td-card-head">
+            <Button aria-label="Previous day" className="icon-button td-prev" onClick={() => goDay(-1)}><Icon name="arrow" size={16} /></Button>
+            <div>
+              <strong>{fmtLongDay(day)}{day === TODAY ? " · today" : ""}</strong>
+              <small className={dayTone(dayMinutes(day))}>{dayMinutes(day) ? `${fmtH(dayMinutes(day))} h logged` : "Nothing logged yet"}</small>
+            </div>
+            <Button aria-label="Next day" className="icon-button" onClick={() => goDay(1)}><Icon name="arrow" size={16} /></Button>
+          </div>
+          {rows.map((row) => {
+            const entry = entryAt(row, day);
+            const lock = cellLock(entry, row.type, day);
+            const project = projectOf(row.project);
+            return (
+              <button className={`td-row ${entry ? `is-${entry.status}` : ""}`} disabled={!!lock && !entry} key={row.key} onClick={() => openSheet(row, day)} type="button">
+                <span className="td-row-copy">
+                  <strong>{rowName(row)}</strong>
+                  <small>{entry?.status === "rejected" ? "Rejected, tap to fix" : `${project ? typeOf(row.type).name : "No project needed"}${entry && entry.status !== "draft" ? ` · ${statusLabel[entry.status]}` : ""}`}</small>
+                </span>
+                <span className="td-hours">{entry ? `${fmtH(entry.minutes)} h` : lock ? "–" : <Icon name="plus" size={16} />}</span>
+              </button>
+            );
+          })}
+          <Button className="td-add" onClick={() => setModal("addRow")}><Icon name="plus" size={15} /> Add row</Button>
+        </section>
+        <div className="td-bar">
+          <Button className="secondary-button" onClick={() => setModal("actions")}>Actions</Button>
+          <Button className="primary-button" disabled={!toSubmit.length && inWeek.length > 0} onClick={() => setModal("submit")}><Icon name="check" size={16} /> Submit week</Button>
+        </div>
+        {overlays}
+      </>
+    );
+
+  const selRow = selected && dates.includes(selected.date) ? rows.find((row) => row.key === selected.row) : undefined;
+  const selEntry = selRow && selected ? entryAt(selRow, selected.date) : undefined;
 
   return (
     <>
-      <section className="time-hero">
-        <div><span>WEEK 24</span><strong>{total.toFixed(1)} h</strong><small>of {standardDay * 5} scheduled hours</small></div>
-        <div className="week-days">{timeDays.map((day, index) => <span className={days[index] ? "is-filled" : ""} key={day.name}>{day.short}<b>{days[index]}h</b></span>)}</div>
-        <Button className="primary-button" onClick={() => setAdding(true)}><Icon name="plus" size={17} /> Add time entry</Button>
+      <section className="tw-head">
+        <div className="week-nav">
+          <Button aria-label="Previous week" className="icon-button small" onClick={() => goWeek(-1)}><Icon name="arrow" size={15} /></Button>
+          <div>
+            <Heading level={2}>{weekLabel} · {rangeLabel}</Heading>
+            <p>
+              <Badge tone={status.tone}>{status.label}</Badge>
+              {saved && <span className="saved-note"><Icon name="check" size={12} /> Saved as you type</span>}
+            </p>
+          </div>
+          <Button aria-label="Next week" className="icon-button small" onClick={() => goWeek(1)}><Icon name="arrow" size={15} /></Button>
+          {weekStart !== mondayOf(TODAY) && <Button className="text-button" onClick={goToday}>This week</Button>}
+        </div>
+        <div className="tw-progress">
+          <div><strong>{fmtH(total)} h</strong><small>of 40 h{total < standardWeek ? ` · ${fmtH(standardWeek - total)} h left` : ""}</small></div>
+          <div className="progress"><span style={{ width: `${Math.min(100, (total / standardWeek) * 100)}%` }} /></div>
+        </div>
+        <div className="tw-actions">
+          <Button className="secondary-button" onClick={() => setModal("copy")}>Copy last week</Button>
+          <Button className="secondary-button" onClick={openAbsence}><Icon name="calendar" size={15} /> Vacation or absence</Button>
+          {canRecall && <Button className="secondary-button" onClick={recallWeek}>Recall</Button>}
+          <Button className="primary-button compact" disabled={!toSubmit.length && inWeek.length > 0} onClick={() => setModal("submit")}><Icon name="check" size={16} /> Submit week</Button>
+        </div>
       </section>
-      <section className="two-col">
-        <article className="panel list-panel">
-          <div className="panel-heading"><div><Heading level={2}>This week</Heading><p>Your logged time, newest first</p></div><Badge tone="sand">{Math.round((total / (standardDay * 5)) * 100)}% complete</Badge></div>
-          {timeDays.map((day, index) => ({ day, index, items: entries.filter((entry) => entry.day === index).reverse() })).filter((group) => group.items.length).reverse().map((group) => (
-            <div className="day-group" key={group.day.name}>
-              <div className="day-heading"><strong>{group.day.name}</strong><span>{group.day.date}</span><b>{days[group.index].toFixed(1)} h</b></div>
-              {group.items.map((entry) => {
-                const project = timeProjects.find((item) => item.name === entry.project);
+
+      <section className="panel table-panel tw-panel">
+        <div className="panel-heading">
+          <div>
+            <Heading level={2}>Your week</Heading>
+            <p>
+              {plural(assignedCount, "project assignment fills", "project assignments fill")} the rows{hiddenCount ? ` (${hiddenCount} closed or ended hidden)` : ""}. Type 7.5 or 7,5; it saves as you go.
+            </p>
+          </div>
+          <Button className="secondary-button" onClick={() => setModal("addRow")}><Icon name="plus" size={15} /> Add row</Button>
+        </div>
+        <div className="table-scroll">
+          <table className="tw-grid" ref={tableRef}>
+            <thead>
+              <tr>
+                <th>Project and type</th>
+                {dates.map((date) => (
+                  <th className={[isWeekend(date) && "is-weekend", date === TODAY && "is-today"].filter(Boolean).join(" ")} key={date}>
+                    <span>{dayNames[dayIndex(date)].slice(0, 3)}</span>
+                    <small>{shortDate(date)}</small>
+                  </th>
+                ))}
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!rows.length && (
+                <tr><td className="tw-empty" colSpan={9}>No rows this week. Add a row, or copy last week.</td></tr>
+              )}
+              {rows.map((row, r) => {
+                const project = projectOf(row.project);
+                const type = typeOf(row.type);
+                const rowTotal = sumMinutes(inWeek.filter((entry) => rowKey(entry.project, entry.type) === row.key));
                 return (
-                  <div className={`entry-row ${entry.id === lastId ? "is-new" : ""}`} key={entry.id}>
-                    <span className="company-logo">{(project?.account ?? entry.project).slice(0, 2).toUpperCase()}</span>
-                    <span className="entry-copy"><strong>{entry.task}</strong><small>{entry.type} · {entry.project} · {project?.account}</small></span>
-                    <Badge tone={entry.billable ? "green" : "slate"}>{entry.billable ? "Billable" : project?.kind === "absence" ? "Absence" : "Internal"}</Badge>
-                    <strong className="entry-hours">{entry.hours.toFixed(1)} h</strong>
-                  </div>
+                  <tr key={row.key}>
+                    <td className="tw-rowhead">
+                      <div className="tw-rowcopy">
+                        <strong>{rowName(row)}</strong>
+                        <small>{project ? `${project.account} · ${type.name}` : "No project needed"}</small>
+                      </div>
+                      <div className="tw-rowtools">
+                        {type.billable && <Badge tone="green">Billable</Badge>}
+                        {canFill(row) && <Button className="text-button" onClick={() => fillRow(row)} title="Fills each open weekday up to 8 h">Fill 8 h days</Button>}
+                        {!row.assigned && !rowTotal && <Button className="text-button tw-remove" onClick={() => removeRow(row)}>Remove</Button>}
+                      </div>
+                    </td>
+                    {dates.map((date, c) => {
+                      const entry = entryAt(row, date);
+                      const lock = cellLock(entry, row.type, date);
+                      const id = cellId(row.key, date);
+                      const error = errors[id];
+                      const tip = error || (entry?.pmComment && entry.status === "rejected" ? `Rejected: ${entry.pmComment}` : "") || entry?.comment || lock || undefined;
+                      const classes = [
+                        "tw-cell",
+                        isWeekend(date) && "is-weekend",
+                        date === TODAY && "is-today",
+                        entry && `is-${entry.status}`,
+                        lock && !entry && "is-closed",
+                        error && "is-invalid",
+                        selected?.row === row.key && selected.date === date && "is-selected",
+                      ];
+                      return (
+                        <td className={classes.filter(Boolean).join(" ")} key={date} title={tip}>
+                          <input
+                            aria-label={`${rowName(row)}, ${type.name}, ${fmtDay(date)}`}
+                            data-cell={`${r}:${c}`}
+                            data-row={row.key}
+                            inputMode="decimal"
+                            onBlur={() => commitCell(row, date)}
+                            onChange={(event) => setDrafts({ ...drafts, [id]: event.target.value })}
+                            onFocus={(event) => {
+                              event.target.select();
+                              setSelected({ row: row.key, date });
+                            }}
+                            onKeyDown={(event) => onCellKey(event, r, c, id)}
+                            readOnly={!!lock}
+                            tabIndex={lock && !entry ? -1 : 0}
+                            value={drafts[id] ?? (entry ? fmtH(entry.minutes) : "")}
+                          />
+                          {entry?.comment && <i className="tw-note" />}
+                        </td>
+                      );
+                    })}
+                    <td className="tw-total">{rowTotal ? fmtH(rowTotal) : "–"}</td>
+                  </tr>
                 );
               })}
-            </div>
-          ))}
-        </article>
-        <div className="side-stack">
-          <article className="timer-card">
-            <span className="timer-label"><i />Timer running</span>
-            <strong>01:24:36</strong>
-            <p>Nova implementation<small>Go-live checklist · Nordic Solutions</small></p>
-            <Button className="primary-button compact">Stop &amp; save</Button>
-          </article>
-          <article className="panel form-panel">
-            <div className="panel-heading"><div><Heading level={2}>Quick entry</Heading><p>Pick the project first, then the type</p></div></div>
-            <EntryForm defaultDay={4} entries={entries} onSave={save} />
-          </article>
+            </tbody>
+            <tfoot>
+              <tr>
+                <td>Day total</td>
+                {dates.map((date) => {
+                  const minutes = dayMinutes(date);
+                  const tone = dayTone(minutes);
+                  return (
+                    <td className={tone} key={date} title={tone === "is-error" ? "More than 24 h: can't be submitted" : tone === "is-warn" ? "More than 10 h" : undefined}>
+                      {minutes ? fmtH(minutes) : "–"}
+                    </td>
+                  );
+                })}
+                <td>{fmtH(total)} / 40</td>
+              </tr>
+            </tfoot>
+          </table>
         </div>
-      </section>
-      {adding && (
-        <div className="modal-backdrop" onClick={() => setAdding(false)}>
-          <div aria-label="Add time entry" aria-modal="true" className="modal-card" onClick={(event) => event.stopPropagation()} role="dialog">
-            <div className="panel-heading">
-              <div><Heading level={2}>Add time entry</Heading><p>Pick the project first, then the type of work</p></div>
-              <Button aria-label="Close" className="icon-button small" onClick={() => setAdding(false)}><Icon name="close" size={15} /></Button>
-            </div>
-            <EntryForm autoFocus defaultDay={4} entries={entries} onSave={save} />
+        <div className="tw-legend">
+          <span><i className="tw-key tw-key--draft" />Draft</span>
+          <span><i className="tw-key tw-key--submitted" />Submitted</span>
+          <span><i className="tw-key tw-key--approved" />Approved</span>
+          <span><i className="tw-key tw-key--rejected" />Rejected</span>
+          <span><i className="tw-key tw-key--closed" />Not open yet</span>
+          <span><i className="tw-note tw-note--legend" />Has a comment</span>
+        </div>
+        <div className="tw-detail">
+          {selRow && selected ? (
+            <>
+              <div className="tw-detail-head">
+                <strong>{fmtLongDay(selected.date)} · {rowName(selRow)}</strong>
+                <small>
+                  {typeOf(selRow.type).name} · {typeOf(selRow.type).billable ? "Billable" : "Not billable"} · {selEntry ? statusLabel[selEntry.status] : cellLock(undefined, selRow.type, selected.date) || "No time yet"}
+                </small>
+              </div>
+              <label className="field">
+                <span>Comment on this entry</span>
+                <TextInput
+                  disabled={!selEntry || !isEditable(selEntry)}
+                  maxLength={500}
+                  onChange={(event) => selEntry && setComment(selEntry.id, event.target.value)}
+                  placeholder={selEntry ? "What did you work on? (optional)" : "Enter hours first"}
+                  value={selEntry?.comment ?? ""}
+                />
+              </label>
+              {errors[cellId(selRow.key, selected.date)] && <p className="tw-msg tw-msg--error tw-wide">{errors[cellId(selRow.key, selected.date)]} Esc undoes the change.</p>}
+              {selEntry?.pmComment && (
+                <p className="tw-msg tw-msg--error tw-wide">
+                  <b>Rejected by your PM:</b> {selEntry.pmComment}{" "}
+                  {selEntry.status === "rejected" ? "Change the hours or move them to the right row, then submit again." : "You've changed it. Submit the week again."}
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="tw-hint">Click a cell to see its status or add a comment. Tab and the arrow keys move between cells, Enter moves down and Esc undoes a change.</p>
+          )}
+        </div>
+        <div className="split">
+          <div className="split-bar"><span style={{ width: `${total ? Math.round((billable / total) * 100) : 0}%` }} /></div>
+          <div className="split-legend">
+            <span><i className="dot dot--sand" />Billable {fmtH(billable)} h</span>
+            <span><i className="dot dot--muted" />Not billable {fmtH(total - billable)} h</span>
           </div>
         </div>
-      )}
+      </section>
+      {overlays}
     </>
   );
 }
