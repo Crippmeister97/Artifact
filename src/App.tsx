@@ -1021,7 +1021,8 @@ const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // The 11 types from ADR-004. Only Client Work and Overtime are billable by default.
-// Vacation and Absence need no project and are the only types allowed ahead of the day.
+// Vacation and Absence need no project and can be submitted ahead of the day. Other types can be planned ahead as drafts
+// (34 of 69 people did that in Dynamics, Aug–Oct 2026), but are only submitted once the day has come.
 // Travel stays in the data (1 entry ever in Dynamics) but isn't offered anywhere.
 const timeTypes: TimeType[] = [
   { code: "client_work", name: "Client Work", billable: true, needsProject: true, futureOk: false },
@@ -1183,7 +1184,6 @@ function cellLock(entry: TimeEntry | undefined, type: TimeTypeCode, date: string
   if (entry?.status === "submitted") return "Submitted, waiting for approval";
   if (entry?.status === "approved") return "Approved and locked";
   if (isMonthLocked(monthOf(date))) return `${monthName(monthOf(date))} is locked`;
-  if (!entry && date > TODAY && !typeOf(type).futureOk) return `${typeOf(type).name} can't be logged ahead of the day`;
   return "";
 }
 
@@ -1270,7 +1270,11 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
   const total = sumMinutes(inWeek);
   const status = weekStatus(inWeek);
   // Drafts in a locked month stay as they are; Finance sees them, nobody submits them late by accident.
-  const toSubmit = inWeek.filter((entry) => (entry.status === "draft" || entry.status === "rejected") && !isMonthLocked(monthOf(entry.date)));
+  const open = inWeek.filter((entry) => (entry.status === "draft" || entry.status === "rejected") && !isMonthLocked(monthOf(entry.date)));
+  // Days ahead can be planned, but only time that has happened is submitted (vacation and absence excepted).
+  const isPlanned = (entry: TimeEntry) => entry.date > TODAY && !typeOf(entry.type).futureOk;
+  const toSubmit = open.filter((entry) => !isPlanned(entry));
+  const planned = open.filter(isPlanned);
   const weekExpected = dates.reduce((sum, date) => sum + expectedOn(date), 0);
   const lockedMonths = [...new Set(dates.map(monthOf))].filter(isMonthLocked);
   const openMonth = [...new Set(dates.map(monthOf))].find((month) => !isMonthLocked(month));
@@ -1477,7 +1481,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
     const parts = [`Copied ${plural(rowCount, "row", "rows")} from week ${isoWeek(lastStart)}${copyHours ? ` with ${plural(created, "entry", "entries")}` : ""}.`];
     if (copyable.length < last.length) parts.push("Vacation, absence and overtime aren't copied.");
     if (kept) parts.push(`${plural(kept, "cell you'd filled was", "cells you'd filled were")} kept.`);
-    if (ahead) parts.push(`${plural(ahead, "day was", "days were")} left empty (ahead of today or in a locked month).`);
+    if (ahead) parts.push(`${plural(ahead, "day was", "days were")} left empty (in a locked month).`);
     setToast(parts.join(" "));
   }
 
@@ -1663,6 +1667,8 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
     if (!openDays.length && toSubmit.length && weekOver)
       return { tone: "sand", text: `Your week is complete. Submitting it lets your project managers approve it, so invoicing goes out on time.${closesSoon}`, action: "Submit week", run: () => setModal("submit") };
     if (!openDays.length && toSubmit.length) return { tone: "green", text: `You're up to date. The rest of the week is still open.${closesSoon}` };
+    if (!toSubmit.length && planned.length)
+      return { tone: "green", text: `Submitted up to today. ${fmtH(sumMinutes(planned))} h planned for later days stays a draft until the day has come.` };
     if (inWeek.length && !toSubmit.length)
       return { tone: "green", text: inWeek.every((entry) => entry.status === "approved") ? "Approved. Nothing left to do this week." : "Submitted. Your project managers approve it next." };
     if (usualRow && openDays.length) return null;
@@ -1875,7 +1881,8 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
         </>
       );
     if (modal === "submit") {
-      const billable = sumMinutes(inWeek.filter((entry) => typeOf(entry.type).billable));
+      const sending = sumMinutes(toSubmit);
+      const billable = sumMinutes(toSubmit.filter((entry) => typeOf(entry.type).billable));
       return (
         <>
           {modalHead(`Submit ${weekLabel.toLowerCase()}`, rangeLabel)}
@@ -1885,14 +1892,15 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
               <Button className="primary-button compact full" onClick={openAbsence}><Icon name="calendar" size={15} /> Add vacation or absence</Button>
             </>
           ) : !toSubmit.length ? (
-            <p className="tw-msg tw-msg--info">Everything this week is already submitted.</p>
+            <p className="tw-msg tw-msg--info">{planned.length ? "Everything up to today is submitted. The planned days are submitted once they've come." : "Everything this week is already submitted."}</p>
           ) : (
             <>
               <div className="tw-summary">
-                <div><span>Week total</span><strong>{fmtH(total)} h</strong></div>
+                <div><span>{planned.length ? "Up to today" : "Week total"}</span><strong>{fmtH(sending)} h</strong></div>
                 <div><span>Billable</span><strong>{fmtH(billable)} h</strong></div>
-                <div><span>Not billable</span><strong>{fmtH(total - billable)} h</strong></div>
+                <div><span>Not billable</span><strong>{fmtH(sending - billable)} h</strong></div>
               </div>
+              {planned.length > 0 && <p className="tw-msg tw-msg--info">{fmtH(sumMinutes(planned))} h planned for later days stays a draft. Submit it once the days have come.</p>}
               {blockers.map((text) => <p className="tw-msg tw-msg--error" key={text}>{text}</p>)}
               {needsWork.map((item) => (
                 <p className="tw-msg tw-msg--error tw-fix" key={item.text}>
@@ -2221,6 +2229,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
                         isWeekend(date) && "is-weekend",
                         date === TODAY && "is-today",
                         entry && `is-${entry.status}`,
+                        entry?.status === "draft" && entry.date > TODAY && "is-planned",
                         lock && !entry && "is-closed",
                         error && "is-invalid",
                         pop?.row === row.key && pop.date === date && "is-open",
@@ -2293,7 +2302,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
             <Button
               className="tw-link tw-demo"
               onClick={() => {
-                const ids = new Set(toSubmit.map((entry) => entry.id));
+                const ids = new Set(open.map((entry) => entry.id));
                 setEntries(entries.filter((entry) => !ids.has(entry.id)));
                 setDismissed({ ...dismissed, [weekStart]: false });
                 setToast(`Cleared ${plural(ids.size, "draft entry", "draft entries")} in ${weekLabel.toLowerCase()}.`);

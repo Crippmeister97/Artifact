@@ -920,6 +920,8 @@ button.mini-row > .icon { color: var(--muted); }
 .calm .tw-cell input:focus, .calm .tw-cell.is-open input { background: #fff; box-shadow: inset 0 0 0 1px #cfcabb, 0 0 0 3px rgba(40, 43, 51, .05); }
 .calm .tw-cell.is-draft input { background: transparent; }
 .calm .tw-cell.is-submitted input, .calm .tw-cell.is-approved input { color: #9b978a; background: transparent; }
+/* Planned ahead: a draft for a day that hasn't come yet. */
+.calm .tw-cell.is-planned input { color: #8a8576; font-style: italic; }
 .calm .tw-cell.is-rejected input { color: var(--red); background: transparent; box-shadow: inset 0 -2px 0 var(--red); border-radius: 0; }
 .calm .tw-cell.is-closed input, .calm .tw-cell.is-closed input:hover { background: transparent; }
 .calm .tw-cell.is-invalid input { color: var(--red); background: #fff; box-shadow: inset 0 0 0 1px var(--red); }
