@@ -1,4 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap");
 @import "tailwindcss";
 
 :root {
@@ -870,10 +869,10 @@ button.mini-row > .icon { color: var(--muted); }
   .tw-inline-field select { height: 40px; font-size: 16px; }
 }
 
-/* Calm, premium look for Time entries and Hours overview: bigger type, numbers in front, hairlines instead of boxes,
+/* Calm, premium look for Time entries and Hours overview: the app's own font, bigger type, numbers in front, hairlines instead of boxes,
    colour only where something needs attention, and one next step. Scoped to .calm so the rest of the prototype is untouched. */
 .calm { --hair: #e6e4dc; --soft: #f7f6f1; --quiet: #8d897c; font-size: 13px; }
-.calm .tw-display { margin: 0; color: var(--ink); font-family: "Newsreader", Georgia, "Times New Roman", serif; font-weight: 500; letter-spacing: -.01em; font-variant-numeric: lining-nums tabular-nums; }
+.calm .tw-display { margin: 0; color: var(--ink); font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .calm .tw-subtle { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--quiet); font-size: 12px; }
 .calm .tw-link { height: auto; padding: 0; border: 0; display: inline-flex; align-items: center; gap: 5px; color: #4d4a41; background: none; font-size: 12px; font-weight: 500; text-decoration: underline; text-decoration-color: #cfcabb; text-underline-offset: 3px; }
 .calm .tw-link:hover { color: var(--ink); text-decoration-color: currentColor; }
@@ -942,7 +941,7 @@ button.mini-row > .icon { color: var(--muted); }
 .calm .tw-pop .field > span { font-size: 9px; }
 .calm .tw-pop .field input { height: 38px; font-size: 13px; }
 .calm .modal-card { border-radius: 16px; }
-.calm .modal-card .panel-heading h2 { font-family: "Newsreader", Georgia, serif; font-size: 22px; font-weight: 500; }
+.calm .modal-card .panel-heading h2 { font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
 .calm .modal-card .panel-heading p { font-size: 12px; }
 .calm .ar-item strong { font-size: 13px; }
 
