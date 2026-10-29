@@ -2436,13 +2436,15 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
   const sum = (items: HoursEntry[]) => items.reduce((total, entry) => total + entry.hours, 0);
   const days: { date: string; state: DayState; hours: number }[] = [];
   let expected = 0;
+  let whole = 0;
   let run = 0;
   let longestGap = 0;
   for (let date = period.start; date <= period.end; date = addDays(date, 1)) {
     if (isWeekend(date)) continue;
-    const works = person.days.includes(dayIndex(date));
+    const works = person.days.includes(dayIndex(date)) && !isHoliday(date);
     const onDay = list.filter((entry) => entry.date === date);
     const hours = sum(onDay);
+    if (works) whole += person.perDay;
     if (date > cutoff) {
       days.push({ date, state: works ? "future" : "off", hours });
       continue;
@@ -2463,6 +2465,7 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
   return {
     days,
     expected,
+    whole,
     reported,
     missing: Math.max(0, expected - reported),
     client: sum(counted.filter((entry) => entry.kind === "client")),
@@ -2516,6 +2519,8 @@ function HoursOverview() {
 
   const total = (pick: (row: (typeof rows)[number]) => number) => rows.reduce((sum, row) => sum + pick(row), 0);
   const expected = total((row) => row.stats.expected);
+  const whole = total((row) => row.stats.whole);
+  const inPeriod = month ? `in ${monthName(month)}` : "this week";
   const reported = total((row) => row.stats.reported);
   const missing = total((row) => row.stats.missing);
   const waiting = total((row) => row.stats.waiting);
@@ -2662,7 +2667,7 @@ function HoursOverview() {
         <article className="ho-tile">
           <span>Reported</span>
           <strong className="tw-display">{pct}%</strong>
-          <small>{fmtHours(reported)} of {fmtHours(expected)} h expected</small>
+          <small>{fmtHours(reported)} of {fmtHours(expected)} h expected{current ? ` so far · ${fmtHours(whole)} h ${inPeriod}` : ""}</small>
           <div className="progress"><span style={{ width: `${Math.min(100, pct)}%` }} /></div>
         </article>
         <article className="ho-tile">
@@ -2750,6 +2755,7 @@ function HoursOverview() {
                   </td>
                   <td className="r">
                     {fmtHours(stats.expected)}
+                    {current && <small className="ho-sub">so far · {fmtHours(stats.whole)} {inPeriod}</small>}
                     {person.days.length * person.perDay < 40 && <small className="ho-sub">{Math.round((person.days.length * person.perDay) / 0.4)}% time</small>}
                   </td>
                   <td>
