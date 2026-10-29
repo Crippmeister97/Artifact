@@ -30,6 +30,7 @@ type Page =
   | "summary"
   | "approvals"
   | "hours"
+  | "finance"
   | "sales"
   | "projects"
   | "utilization"
@@ -143,6 +144,7 @@ const pageMeta: Record<Page, { title: string; eyebrow: string }> = {
   summary: { title: "Time summary", eyebrow: "My work · your own time" },
   approvals: { title: "Approvals", eyebrow: "Team" },
   hours: { title: "Hours overview", eyebrow: "Finance · who has reported their time" },
+  finance: { title: "Finance dashboard", eyebrow: "Finance · the month at a glance" },
   sales: { title: "Pipeline", eyebrow: "Opportunities · MEDDPICC qualification" },
   projects: { title: "Projects", eyebrow: "Delivery & financials" },
   utilization: { title: "Resource utilization", eyebrow: "Capacity planning" },
@@ -169,7 +171,10 @@ const navGroups: { label: string; items: { id: Page; label: string; icon?: IconN
   },
   {
     label: "Finance",
-    items: [{ id: "hours", label: "Hours overview", icon: "trend" }],
+    items: [
+      { id: "finance", label: "Finance dashboard", icon: "sales" },
+      { id: "hours", label: "Hours overview", icon: "trend" },
+    ],
   },
   {
     label: "Customers",
@@ -2874,6 +2879,225 @@ function HoursOverview() {
   );
 }
 
+// Finance dashboard: can we invoice, and when? Month close, ready to invoice, the approval queue, hours added after the
+// lock, and overtime for payroll. Who is missing hours is in Hours overview; this page is the month at a glance.
+const invoiceProjects = [
+  { name: "Nova implementation", account: "Nordic Solutions", rate: 1250 },
+  { name: "CRM migration", account: "TechVision AB", rate: 1300 },
+  { name: "Digital platform 2.0", account: "Bright Digital", rate: 1200 },
+  { name: "Service desk", account: "Nordic Solutions", rate: 1100 },
+  { name: "Data platform", account: "Klinte Logistik AB", rate: 1350 },
+];
+const projectFor = (person: string) => invoiceProjects[[...person].reduce((sum, char) => sum + char.charCodeAt(0), 0) % invoiceProjects.length];
+// Measured in Dynamics on 29 Oct 2026 (aggregate, no names): hours created after the 2nd of the next month.
+const lateHoursBefore: [string, number][] = [["Nov", 114], ["Dec", 144], ["Jan", 237], ["Feb", 218], ["Mar", 263], ["Apr", 235], ["May", 155], ["Jun", 112], ["Jul", 84], ["Aug", 269], ["Sep", 35]];
+const overtimeForPayroll = [
+  { person: "Hugo Sandberg", project: "CRM migration", hours: 4, approvedBy: "Mikael K.", month: "2026-09", status: "Approved" },
+  { person: "Oliver Nyström", project: "Nova implementation", hours: 3, approvedBy: "Johanna S.", month: "2026-10", status: "Approved" },
+  { person: "Isak Söderberg", project: "Data platform", hours: 6, approvedBy: "Sofia L.", month: "2026-10", status: "Waiting for PM" },
+];
+const kr = (value: number) => `${Math.round(value).toLocaleString("sv-SE")} kr`;
+
+function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
+  const [month, setMonth] = useState("2026-10");
+  const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 4500);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const months = ["2026-09", "2026-10"];
+  const period = hoursPeriods.find((item) => item.key === month) ?? hoursPeriods[0];
+  const locked = isMonthLocked(month);
+  const deadline = monthDeadline(month);
+  const cutoff = period.end < TODAY ? period.end : addDays(mondayOf(TODAY), -1);
+  const locks: Record<string, MonthLock> = { "2026-09": { at: addDays(monthDeadline("2026-09"), 1), by: "Automatic" } };
+  const people = hoursPeople.map((person) => ({ person, stats: personHours(person, period, locks, cutoff) }));
+  const total = (pick: (row: (typeof people)[number]) => number) => people.reduce((sum, row) => sum + pick(row), 0);
+  const expected = total((row) => row.stats.expected);
+  const reported = total((row) => row.stats.reported);
+  const missing = total((row) => row.stats.missing);
+  const afterLock = total((row) => row.stats.afterLock);
+  const short = people.filter((row) => row.stats.missing > 0).length;
+  const pct = expected ? Math.round((reported / expected) * 100) : 0;
+  const daysLeft = Math.max(0, Math.round((toDate(deadline).getTime() - toDate(TODAY).getTime()) / 86400000));
+
+  const clientHours = hoursEntries.filter((entry) => monthOf(entry.date) === month && entry.kind === "client");
+  const customers = Object.values(
+    clientHours.reduce<Record<string, { account: string; approved: number; waiting: number; value: number }>>((groups, entry) => {
+      const project = projectFor(entry.person);
+      const group = groups[project.account] ?? { account: project.account, approved: 0, waiting: 0, value: 0 };
+      if (entry.status === "approved") groups[project.account] = { ...group, approved: group.approved + entry.hours, value: group.value + entry.hours * project.rate };
+      else groups[project.account] = { ...group, waiting: group.waiting + entry.hours };
+      return groups;
+    }, {}),
+  ).sort((a, b) => b.value - a.value);
+  const ready = customers.reduce((sum, item) => sum + item.value, 0);
+  const readyHours = customers.reduce((sum, item) => sum + item.approved, 0);
+  const notApproved = customers.reduce((sum, item) => sum + item.waiting, 0);
+
+  const queue = Object.entries(
+    hoursEntries
+      .filter((entry) => monthOf(entry.date) === month && entry.status === "submitted")
+      .reduce<Record<string, { hours: number; people: Set<string>; oldest: string }>>((groups, entry) => {
+        const pm = hoursPeople.find((person) => person.id === entry.person)?.pm ?? "?";
+        const group = groups[pm] ?? { hours: 0, people: new Set<string>(), oldest: "9999" };
+        group.hours += entry.hours;
+        group.people.add(entry.person);
+        if (entry.date < group.oldest) group.oldest = entry.date;
+        groups[pm] = group;
+        return groups;
+      }, {}),
+  ).sort((a, b) => b[1].hours - a[1].hours);
+  const daysWaiting = (date: string) => Math.round((toDate(TODAY).getTime() - toDate(date).getTime()) / 86400000);
+
+  const overtime = overtimeForPayroll.filter((item) => item.month === month);
+  const maxLate = Math.max(...lateHoursBefore.map(([, hours]) => hours));
+
+  function exportPayroll() {
+    const lines = [["Person", "Project", "Overtime h", "Pre-approved by", "Status"].join(","), ...overtime.map((item) => [item.person, item.project, item.hours, item.approvedBy, item.status].map((value) => `"${value}"`).join(","))];
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" }));
+    link.download = `overtime-${month}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  return (
+    <div className="calm">
+      <section className="tw-hero">
+        <div className="tw-hero-top">
+          <div className="tw-title">
+            <div className="tw-arrows">
+              <Button aria-label="Previous month" className="tw-arrow tw-arrow--back" disabled={month === months[0]} onClick={() => setMonth(months[months.indexOf(month) - 1])}><Icon name="arrow" size={14} /></Button>
+              <Button aria-label="Next month" className="tw-arrow" disabled={month === months[months.length - 1]} onClick={() => setMonth(months[months.indexOf(month) + 1])}><Icon name="arrow" size={14} /></Button>
+            </div>
+            <div>
+              <h2 className="tw-display">Month close · {monthTitle(month)}</h2>
+              <p className="tw-subtle">{locked ? `Locked since ${fmtDay(addDays(deadline, 1))}` : `Locks automatically after ${fmtDay(deadline)} · ${plural(daysLeft, "day", "days")} left`}</p>
+            </div>
+          </div>
+          <div className="tw-figure">
+            <strong className="tw-display">{pct}<small>%</small></strong>
+            <span className="tw-subtle">of hours in</span>
+          </div>
+        </div>
+        <div className="tw-line"><span style={{ width: `${Math.min(100, pct)}%` }} /></div>
+        <div className={`tw-next tw-next--${locked ? "green" : short ? "amber" : "green"}`} role="status">
+          <span className="tw-next-text">
+            <i className="tw-dot" />
+            {locked
+              ? `${monthName(month)} is closed. ${fmtHours(afterLock)} h came in after the lock, through unlocks with a reason.`
+              : `${plural(short, "person is", "people are")} still short ${fmtHours(missing)} h, and ${fmtHours(notApproved)} h of client time waits for a project manager.`}
+          </span>
+          <Button className="primary-button compact" onClick={() => onOpen("hours")}>{locked ? "See the lock log" : "See who"}</Button>
+        </div>
+      </section>
+
+      <section className="ho-tiles">
+        <article className="ho-tile">
+          <span>Ready to invoice</span>
+          <strong className="tw-display">{kr(ready)}</strong>
+          <small>{fmtHours(readyHours)} approved billable h</small>
+        </article>
+        <article className="ho-tile">
+          <span>Waiting for approval</span>
+          <strong className="tw-display">{fmtHours(notApproved)} h</strong>
+          <small>client time not approved yet</small>
+        </article>
+        <article className={`ho-tile ${missing ? "is-alert" : ""}`}>
+          <span>Not reported</span>
+          <strong className="tw-display">{fmtHours(missing)} h</strong>
+          <small>{plural(short, "person", "people")} below expected</small>
+        </article>
+        <article className="ho-tile">
+          <span>Overtime for payroll</span>
+          <strong className="tw-display">{fmtHours(overtime.reduce((sum, item) => sum + item.hours, 0))} h</strong>
+          <small>{plural(overtime.length, "person", "people")} this month</small>
+        </article>
+      </section>
+
+      <section className="ts-grid">
+        <article className="tw-panel ts-card">
+          <h3>Ready to invoice, by customer</h3>
+          <table className="fd-table">
+            <thead><tr><th>Customer</th><th className="r">Approved</th><th className="r">Value</th><th className="r">Not approved</th></tr></thead>
+            <tbody>
+              {customers.map((item) => (
+                <tr key={item.account}>
+                  <td><strong>{item.account}</strong></td>
+                  <td className="r">{fmtHours(item.approved)} h</td>
+                  <td className="r">{kr(item.value)}</td>
+                  <td className={`r ${item.waiting ? "fd-wait" : ""}`}>{item.waiting ? `${fmtHours(item.waiting)} h` : "–"}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot><tr><td>Total</td><td className="r">{fmtHours(readyHours)} h</td><td className="r">{kr(ready)}</td><td className="r">{fmtHours(notApproved)} h</td></tr></tfoot>
+          </table>
+          <p className="tw-hint">Value = approved billable hours × the project's hourly rate. Made-up rates in the demo.</p>
+        </article>
+        <aside className="ts-side">
+          <article className="tw-panel ts-card">
+            <h3>Waiting for a project manager</h3>
+            {queue.length ? (
+              queue.map(([pm, group]) => (
+                <div className="fd-pm" key={pm}>
+                  <Avatar name={pm} size="small" />
+                  <span><strong>{pm}</strong><small>{plural(group.people.size, "person", "people")} · oldest {daysWaiting(group.oldest)} days</small></span>
+                  <b>{fmtHours(group.hours)} h</b>
+                  <Button className="tw-link" onClick={() => setToast(`Asked ${pm} to approve ${fmtHours(group.hours)} h.`)}>Nudge</Button>
+                </div>
+              ))
+            ) : (
+              <p className="tw-hint">Nothing waits for approval.</p>
+            )}
+          </article>
+          <article className="tw-panel ts-card">
+            <h3>Overtime for payroll</h3>
+            {overtime.length ? (
+              <>
+                {overtime.map((item) => (
+                  <div className="fd-pm" key={item.person}>
+                    <Avatar name={item.person} size="small" />
+                    <span><strong>{item.person}</strong><small>{item.project} · pre-approved by {item.approvedBy}</small></span>
+                    <b>{item.hours} h</b>
+                    <span className={`tw-state tw-state--${item.status === "Approved" ? "green" : "sand"}`}>{item.status}</span>
+                  </div>
+                ))}
+                <Button className="tw-link fd-export" onClick={exportPayroll}>Export for payroll (CSV)</Button>
+              </>
+            ) : (
+              <p className="tw-hint">No overtime this month.</p>
+            )}
+          </article>
+        </aside>
+      </section>
+
+      <section className="tw-panel ts-card fd-late">
+        <h3>Hours added after the deadline, before Zephyr</h3>
+        <div className="fd-bars">
+          {lateHoursBefore.map(([label, hours]) => (
+            <div className="fd-bar" key={label} title={`${label}: ${hours} h added after the 2nd`}>
+              <span>{hours}</span>
+              <i style={{ height: `${(hours / maxLate) * 100}%` }} />
+              <small>{label}</small>
+            </div>
+          ))}
+          <div className="fd-bar fd-bar--goal" title="With the automatic lock, only unlocked changes with a reason">
+            <span>{fmtHours(afterLock)}</span>
+            <i style={{ height: `${Math.max(2, (afterLock / maxLate) * 100)}%` }} />
+            <small>Zephyr</small>
+          </div>
+        </div>
+        <p className="tw-hint">Measured in Dynamics on 29 Oct 2026: 35–269 h a month came in after the 2nd, 95% of it client time. With the lock, late hours only come in through an unlock with a reason.</p>
+      </section>
+      {toast && <div className="tw-toast" role="status">{toast}</div>}
+    </div>
+  );
+}
+
 // Time summary: the consultant's own time, read-only. Monthly answers "am I done before the month closes?";
 // weekly shows the last weeks and what a week went to. Entering time happens in Time entries.
 type DayMark = "full" | "partial" | "none" | "away" | "off" | "future" | "outside";
@@ -3840,6 +4064,7 @@ export default function App() {
     );
   else if (page === "approvals") content = <Approvals />;
   else if (page === "hours") content = <HoursOverview />;
+  else if (page === "finance") content = <FinanceDashboard onOpen={setPage} />;
   else if (page === "accounts") content = <Accounts deals={deals} onOpenDeal={openDeal} />;
   else if (page === "contacts") content = <Contacts />;
   else if (page === "leads") content = <Leads />;

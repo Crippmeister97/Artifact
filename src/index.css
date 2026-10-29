@@ -1092,3 +1092,32 @@ button.mini-row > .icon { color: var(--muted); }
 .ho-table th.r .ho-sort { flex-direction: row-reverse; }
 .ho-tag { width: fit-content; margin-top: 5px; padding: 2px 7px; border-radius: 999px; display: block; color: var(--amber); background: var(--amber-soft); font-size: 10px; font-weight: 600; cursor: help; }
 .calm .tw-demo { margin-left: auto; color: var(--quiet); font-weight: 400; }
+
+/* Finance dashboard */
+.calm .tw-arrow:disabled { opacity: .35; cursor: default; }
+.calm .fd-table { min-width: 0; width: 100%; }
+.calm .fd-table th { height: 34px; padding: 6px 4px; color: #a19d90; background: transparent; border-bottom: 1px solid var(--hair); font-size: 10px; letter-spacing: .08em; }
+.calm .fd-table td { height: 44px; padding: 6px 4px; color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; }
+.calm .fd-table .r { text-align: right; }
+.calm .fd-table tfoot td { border-top: 1px solid var(--hair); border-bottom: 0; font-weight: 650; }
+.calm .fd-wait { color: var(--amber); }
+.calm .fd-pm { padding: 10px 0; border-bottom: 1px solid #f0efe9; display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 12px; }
+.calm .fd-pm:last-of-type { border-bottom: 0; }
+.calm .fd-pm > span:not(.tw-state) { display: flex; flex-direction: column; gap: 2px; }
+.calm .fd-pm strong { font-size: 13px; }
+.calm .fd-pm small { color: var(--quiet); font-size: 11px; }
+.calm .fd-pm b { font-variant-numeric: tabular-nums; }
+.calm .fd-export { margin-top: 10px; }
+.calm .fd-late { margin-top: 20px; }
+.calm .fd-bars { height: 180px; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 10px; align-items: end; }
+.calm .fd-bar { height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 6px; }
+.calm .fd-bar span { color: var(--quiet); font-size: 11px; font-variant-numeric: tabular-nums; }
+.calm .fd-bar i { width: 100%; max-width: 40px; border-radius: 6px 6px 2px 2px; display: block; background: #d9d3c1; }
+.calm .fd-bar small { color: #a19d90; font-size: 11px; }
+.calm .fd-bar--goal i { background: var(--navy); }
+.calm .fd-bar--goal span, .calm .fd-bar--goal small { color: var(--ink); font-weight: 600; }
+.calm .fd-late .tw-hint { margin-top: 12px; }
+@media (max-width: 700px) {
+  .calm .fd-bars { gap: 3px; }
+  .calm .fd-bar span { font-size: 9px; }
+}
