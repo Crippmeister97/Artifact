@@ -945,6 +945,7 @@ function Utilization() {
 // Time entries: the consultant's own week (F12-S04 to S07).
 // The demo is pinned to Thu 29 Oct 2026 so the seeded weeks line up with "today".
 // Time types and billable defaults follow ADR-004 (Zephyr repo, docs/data/time_types.seed.json).
+// People log time only on projects they've been added to (Henry, 29 Oct), so "Add row" never lists every customer.
 
 type TimeTypeCode =
   | "client_work"
@@ -960,12 +961,28 @@ type TimeTypeCode =
   | "absence";
 type TimeType = { code: TimeTypeCode; name: string; billable: boolean; needsProject: boolean; futureOk: boolean };
 type ProjectKind = "client" | "internal";
-type TimeProject = { id: string; name: string; account: string; kind: ProjectKind; closed?: boolean };
+// tasks: only a few projects use tasks (3 of 52 in Dynamics, Jul–Sep 2026). customerText: the customer wants a text on every
+// entry in the invoice basis. overtimeRate: the customer has agreed to pay for overtime, the only case Overtime can be logged.
+// home: the internal project internal types land on when there's no specific internal project.
+type TimeProject = { id: string; name: string; account: string; kind: ProjectKind; pm: string; closed?: boolean; home?: boolean; tasks?: string[]; customerText?: boolean; overtimeRate?: number };
 type EntryStatus = "draft" | "submitted" | "approved" | "rejected";
-type TimeEntry = { id: number; date: string; project: string | null; type: TimeTypeCode; minutes: number; comment: string; status: EntryStatus; pmComment?: string };
-type TimeRow = { key: string; project: string | null; type: TimeTypeCode; assigned?: boolean };
-type TimeModal = "copy" | "absence" | "submit" | "addRow" | "actions" | null;
-type TimeSheet = { row: TimeRow; date: string; hours: string; comment: string; error: string };
+type TimeEntry = {
+  id: number;
+  date: string;
+  project: string | null;
+  type: TimeTypeCode;
+  minutes: number;
+  comment: string;
+  status: EntryStatus;
+  pmComment?: string;
+  task?: string;
+  customerText?: string;
+  outsideHours?: boolean;
+  preApprovedBy?: string;
+};
+type TimeRow = { key: string; project: string | null; type: TimeTypeCode; assigned?: boolean; preApprovedBy?: string };
+type TimeModal = "copy" | "absence" | "submit" | "addRow" | "request" | "overtime" | "actions" | null;
+type TimeSheet = { row: TimeRow; date: string; hours: string; comment: string; customerText: string; task: string; outsideHours: boolean; error: string };
 
 const TODAY = "2026-10-29";
 const standardDay = 8 * 60;
@@ -989,74 +1006,86 @@ const timeTypes: TimeType[] = [
   { code: "absence", name: "Absence", billable: false, needsProject: false, futureOk: true },
 ];
 
-// Which types each kind of project offers in "Add row".
+// Which types each kind of project offers in "Add row". Overtime only shows on projects with an overtime agreement.
 const typesForKind: Record<ProjectKind, TimeTypeCode[]> = {
-  client: ["client_work", "overtime", "travel", "support"],
+  client: ["client_work", "travel", "support", "overtime"],
   internal: ["internal_project", "internal_development", "presales_support", "customer_outreach", "resource_assignment_sales"],
 };
 
 const timeProjects: TimeProject[] = [
-  { id: "nova", name: "Nova implementation", account: "Nordic Solutions", kind: "client" },
-  { id: "crm", name: "CRM migration", account: "TechVision AB", kind: "client" },
-  { id: "digital", name: "Digital platform 2.0", account: "Bright Digital", kind: "client" },
-  { id: "portal", name: "Service portal", account: "Forma Studio", kind: "client", closed: true },
-  { id: "zephyr", name: "Zephyr (internal)", account: "Sirocco", kind: "internal" },
-  { id: "presales", name: "Sales & presales", account: "Sirocco", kind: "internal" },
+  { id: "nova", name: "Nova implementation", account: "Nordic Solutions", kind: "client", pm: "Johanna S.", overtimeRate: 2400 },
+  { id: "crm", name: "CRM migration", account: "TechVision AB", kind: "client", pm: "Mikael K.", tasks: ["Discovery", "Build", "Test", "Go-live"], customerText: true },
+  { id: "digital", name: "Digital platform 2.0", account: "Bright Digital", kind: "client", pm: "Sofia L." },
+  { id: "portal", name: "Service portal", account: "Forma Studio", kind: "client", pm: "Sofia L.", closed: true },
+  { id: "desk", name: "Service desk", account: "Nordic Solutions", kind: "client", pm: "Mikael K." },
+  { id: "dataplatform", name: "Data platform", account: "Klinte Logistik AB", kind: "client", pm: "Sofia L." },
+  { id: "zephyr", name: "Zephyr (internal)", account: "Sirocco", kind: "internal", pm: "Mikael K." },
+  { id: "internal", name: "Internal hours", account: "Sirocco", kind: "internal", pm: "Mikael K.", home: true },
 ];
 
 // The consultant's team assignments (F11). A closed project or an ended assignment gives no row.
-const myAssignments: { project: string; ends: string | null }[] = [
-  { project: "nova", ends: null },
-  { project: "crm", ends: null },
-  { project: "portal", ends: null },
-  { project: "digital", ends: "2026-09-30" },
+const myAssignments: { project: string; type: TimeTypeCode; ends: string | null }[] = [
+  { project: "nova", type: "client_work", ends: null },
+  { project: "crm", type: "client_work", ends: null },
+  { project: "zephyr", type: "internal_development", ends: null },
+  { project: "portal", type: "client_work", ends: null },
+  { project: "digital", type: "client_work", ends: "2026-09-30" },
 ];
 
-const seedEntries: [string, string | null, TimeTypeCode, number, EntryStatus, string?, string?][] = [
-  // Week 42: approved
-  ["2026-10-12", "nova", "client_work", 8, "approved"],
-  ["2026-10-13", "nova", "client_work", 8, "approved"],
-  ["2026-10-14", "nova", "client_work", 8, "approved"],
-  ["2026-10-15", "nova", "client_work", 8, "approved"],
-  ["2026-10-16", "nova", "client_work", 8, "approved"],
-  // Week 43: Monday off, Wednesday rejected by the PM, the rest waiting for approval
-  ["2026-10-19", null, "vacation", 8, "approved"],
-  ["2026-10-20", "nova", "client_work", 8, "approved"],
-  ["2026-10-21", "nova", "client_work", 8, "rejected", "", "Wrong project. Wednesday was the CRM migration workshop. /Johanna, PM"],
-  ["2026-10-22", "crm", "client_work", 8, "submitted"],
-  ["2026-10-23", "crm", "client_work", 6, "submitted"],
-  ["2026-10-23", "zephyr", "internal_development", 2, "submitted", "Team learning session"],
-  // Week 44, this week: drafts up to Wednesday, today still empty
-  ["2026-10-26", "nova", "client_work", 8, "draft"],
-  ["2026-10-27", "nova", "client_work", 4, "draft", "Workshop prep"],
-  ["2026-10-27", "crm", "client_work", 4, "draft"],
-  ["2026-10-28", "nova", "client_work", 7.5, "draft"],
-  ["2026-10-28", "zephyr", "internal_development", 0.5, "draft", "Sprint demo"],
-];
+const overtimeApprovers = ["Johanna S.", "Mikael K.", "Sofia L.", "BO"];
 
-const initialTimeEntries: TimeEntry[] = seedEntries.map(([date, project, type, hours, status, comment = "", pmComment], index) => ({
-  id: index + 1,
+const seed = (date: string, project: string | null, type: TimeTypeCode, hours: number, status: EntryStatus, extra: Partial<TimeEntry> = {}) => ({
   date,
   project,
   type,
   minutes: hours * 60,
-  comment,
   status,
-  pmComment,
-}));
+  comment: "",
+  ...extra,
+});
+
+const initialTimeEntries: TimeEntry[] = [
+  // Week 42: approved
+  ...["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16"].map((date) => seed(date, "nova", "client_work", 8, "approved")),
+  // Week 43: Monday off, Wednesday rejected by the PM, Saturday overtime for a go-live, the rest waiting for approval
+  seed("2026-10-19", null, "vacation", 8, "approved"),
+  seed("2026-10-20", "nova", "client_work", 8, "approved"),
+  seed("2026-10-21", "nova", "client_work", 8, "rejected", { pmComment: "Wrong project. Wednesday was the CRM migration workshop. /Johanna, PM" }),
+  seed("2026-10-22", "crm", "client_work", 8, "submitted", { task: "Build", customerText: "Integration tests with SAP" }),
+  seed("2026-10-23", "crm", "client_work", 6, "submitted", { task: "Build", customerText: "Fixed field mapping defects" }),
+  seed("2026-10-23", "zephyr", "internal_development", 2, "submitted", { comment: "Team learning session" }),
+  seed("2026-10-24", "nova", "overtime", 3, "submitted", { comment: "Go-live cutover", preApprovedBy: "Johanna S." }),
+  // Week 44, this week: drafts up to Wednesday, today still empty. The CRM entry still lacks its customer text.
+  seed("2026-10-26", "nova", "client_work", 8, "draft"),
+  seed("2026-10-27", "nova", "client_work", 4, "draft", { comment: "Workshop prep" }),
+  seed("2026-10-27", "crm", "client_work", 4, "draft", { task: "Test" }),
+  seed("2026-10-28", "nova", "client_work", 7.5, "draft"),
+  seed("2026-10-28", "zephyr", "internal_development", 0.5, "draft", { comment: "Sprint demo" }),
+].map((entry, index) => ({ ...entry, id: index + 1 }));
 
 const statusLabel: Record<EntryStatus, string> = { draft: "Draft", submitted: "Submitted", approved: "Approved", rejected: "Rejected" };
 
 const typeOf = (code: TimeTypeCode) => timeTypes.find((item) => item.code === code) ?? timeTypes[0];
 const projectOf = (id: string | null) => timeProjects.find((item) => item.id === id);
+const allowedTypes = (project: TimeProject) => typesForKind[project.kind].filter((code) => code !== "overtime" || !!project.overtimeRate);
 const rowKey = (project: string | null, type: TimeTypeCode) => `${project ?? "none"}|${type}`;
-const rowName = (row: TimeRow) => projectOf(row.project)?.name ?? typeOf(row.type).name;
+const rowName = (row: TimeRow) => {
+  const project = projectOf(row.project);
+  return !project || project.home ? typeOf(row.type).name : project.name;
+};
+const rowSub = (row: TimeRow) => {
+  const project = projectOf(row.project);
+  if (!project) return "No project needed";
+  return project.home ? "Internal hours" : `${project.account} · ${typeOf(row.type).name}`;
+};
 const cellId = (row: string, date: string) => `${row}@${date}`;
 const isEditable = (entry?: TimeEntry) => !entry || entry.status === "draft" || entry.status === "rejected";
 const sumMinutes = (list: TimeEntry[]) => list.reduce((sum, entry) => sum + entry.minutes, 0);
 const nextId = (list: TimeEntry[]) => Math.max(0, ...list.map((entry) => entry.id)) + 1;
 const fmtH = (minutes: number) => String(Math.round((minutes / 60) * 100) / 100);
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+const lastTask = (list: TimeEntry[], project: string | null) =>
+  [...list].filter((entry) => entry.project === project && entry.task).sort((a, b) => b.date.localeCompare(a.date))[0]?.task;
 
 const toDate = (iso: string) => new Date(`${iso}T00:00:00Z`);
 function addDays(iso: string, days: number) {
@@ -1101,6 +1130,17 @@ function cellLock(entry: TimeEntry | undefined, type: TimeTypeCode, date: string
   return "";
 }
 
+// What an entry still needs before it can be submitted. Saving is never blocked, only submitting.
+function entryIssues(entry: TimeEntry) {
+  const project = projectOf(entry.project);
+  const issues: string[] = [];
+  if (project?.tasks && !entry.task) issues.push("a task");
+  if (project?.customerText && !entry.customerText?.trim()) issues.push("a text for the customer");
+  // Sirocco's overtime policy: only work outside ordinary hours counts. Weekends always are; weekdays must be confirmed.
+  if (entry.type === "overtime" && !isWeekend(entry.date) && !entry.outsideHours) issues.push("confirmation that it was outside ordinary hours");
+  return issues;
+}
+
 function weekStatus(list: TimeEntry[]) {
   if (!list.length) return { label: "Nothing logged", tone: "slate" };
   if (list.some((entry) => entry.status === "rejected")) return { label: "Needs changes", tone: "red" };
@@ -1117,17 +1157,17 @@ function activeAssignments(monday: string) {
   return myAssignments.filter((item) => !projectOf(item.project)?.closed && (!item.ends || item.ends >= monday));
 }
 
-// Rows: active assignments first (as Client Work), then rows that already have time this week, then rows added by hand.
+// Rows: active assignments first, then rows that already have time this week, then rows added by hand.
 function rowsForWeek(monday: string, weekEntries: TimeEntry[], added: TimeRow[]) {
   const rows = new Map<string, TimeRow>();
   for (const item of activeAssignments(monday)) {
-    const key = rowKey(item.project, "client_work");
-    rows.set(key, { key, project: item.project, type: "client_work", assigned: true });
+    const key = rowKey(item.project, item.type);
+    rows.set(key, { key, project: item.project, type: item.type, assigned: true });
   }
   const order = (code: TimeTypeCode) => timeTypes.findIndex((item) => item.code === code);
   for (const entry of [...weekEntries].sort((a, b) => order(a.type) - order(b.type))) {
     const key = rowKey(entry.project, entry.type);
-    if (!rows.has(key)) rows.set(key, { key, project: entry.project, type: entry.type });
+    if (!rows.has(key)) rows.set(key, { key, project: entry.project, type: entry.type, preApprovedBy: entry.preApprovedBy });
   }
   for (const row of added) if (!rows.has(row.key)) rows.set(row.key, row);
   return [...rows.values()];
@@ -1159,7 +1199,8 @@ function TimeEntries() {
   const [focusRow, setFocusRow] = useState("");
   const [copyHours, setCopyHours] = useState(false);
   const [absence, setAbsence] = useState({ type: "vacation" as TimeTypeCode, from: TODAY, to: TODAY, hours: "8", error: "" });
-  const [rowQuery, setRowQuery] = useState("");
+  const [request, setRequest] = useState({ query: "", project: "" });
+  const [overtime, setOvertime] = useState({ project: "", approver: "", ordered: false });
   const [mobileDay, setMobileDay] = useState(TODAY);
   const tableRef = useRef<HTMLTableElement>(null);
 
@@ -1176,12 +1217,18 @@ function TimeEntries() {
   const day = dates.includes(mobileDay) ? mobileDay : dates[0];
   const assignedCount = activeAssignments(weekStart).length;
   const hiddenCount = myAssignments.length - assignedCount;
+  const myProjects = activeAssignments(weekStart)
+    .map((item) => projectOf(item.project))
+    .filter((item): item is TimeProject => !!item && !item.home);
+  const homeProject = timeProjects.find((item) => item.home);
 
   const entryAt = (row: TimeRow, date: string) => inWeek.find((entry) => entry.date === date && rowKey(entry.project, entry.type) === row.key);
   const dayMinutes = (date: string) => sumMinutes(inWeek.filter((entry) => entry.date === date));
   const dayTone = (minutes: number) => (minutes > 24 * 60 ? "is-error" : minutes > 10 * 60 ? "is-warn" : minutes >= standardDay ? "is-met" : "");
   const canFill = (row: TimeRow) =>
-    typeOf(row.type).needsProject && dates.some((date) => !isWeekend(date) && !entryAt(row, date) && !cellLock(undefined, row.type, date) && dayMinutes(date) < standardDay);
+    typeOf(row.type).needsProject &&
+    row.type !== "overtime" &&
+    dates.some((date) => !isWeekend(date) && !entryAt(row, date) && !cellLock(undefined, row.type, date) && dayMinutes(date) < standardDay);
 
   useEffect(() => {
     if (!toast) return;
@@ -1206,12 +1253,17 @@ function TimeEntries() {
     setFocusRow("");
   }, [focusRow]);
 
-  function writeCell(row: TimeRow, date: string, minutes: number, comment?: string) {
+  // New entries take the task used last on the project and the row's overtime pre-approval, so nobody types them twice.
+  function writeCell(row: TimeRow, date: string, minutes: number, extra: Partial<TimeEntry> = {}) {
     const existing = entryAt(row, date);
     if (!isEditable(existing)) return;
     if (!minutes) setEntries(existing ? entries.filter((entry) => entry.id !== existing.id) : entries);
-    else if (existing) setEntries(entries.map((entry) => (entry.id === existing.id ? { ...entry, minutes, comment: comment ?? entry.comment, status: "draft" as EntryStatus } : entry)));
-    else setEntries([...entries, { id: nextId(entries), date, project: row.project, type: row.type, minutes, comment: comment ?? "", status: "draft" }]);
+    else if (existing) setEntries(entries.map((entry) => (entry.id === existing.id ? { ...entry, ...extra, minutes, status: "draft" as EntryStatus } : entry)));
+    else
+      setEntries([
+        ...entries,
+        { id: nextId(entries), date, project: row.project, type: row.type, minutes, comment: "", status: "draft", task: lastTask(entries, row.project), preApprovedBy: row.preApprovedBy, ...extra },
+      ]);
     setSaved(true);
   }
 
@@ -1226,8 +1278,8 @@ function TimeEntries() {
     if ((entryAt(row, date)?.minutes ?? 0) !== parsed.minutes) writeCell(row, date, parsed.minutes);
   }
 
-  function setComment(id: number, comment: string) {
-    setEntries(entries.map((entry) => (entry.id === id ? { ...entry, comment } : entry)));
+  function updateEntry(id: number, patch: Partial<TimeEntry>) {
+    setEntries(entries.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
     setSaved(true);
   }
 
@@ -1274,7 +1326,7 @@ function TimeEntries() {
       if (entryAt(row, date) || cellLock(undefined, row.type, date)) continue;
       const left = standardDay - sumMinutes(next.filter((entry) => entry.date === date));
       if (left <= 0) continue;
-      next = [...next, { id: nextId(next), date, project: row.project, type: row.type, minutes: left, comment: "", status: "draft" }];
+      next = [...next, { id: nextId(next), date, project: row.project, type: row.type, minutes: left, comment: "", status: "draft", task: lastTask(entries, row.project) }];
       filled += left;
     }
     setEntries(next);
@@ -1287,7 +1339,8 @@ function TimeEntries() {
     const last = entries.filter((entry) => entry.date >= lastStart && entry.date < weekStart);
     setModal(null);
     if (!last.length) return setToast(`Week ${isoWeek(lastStart)} is empty, so there was nothing to copy.`);
-    const copyable = last.filter((entry) => typeOf(entry.type).needsProject);
+    // Vacation, absence and overtime are one-off: overtime needs its own pre-approval every time.
+    const copyable = last.filter((entry) => typeOf(entry.type).needsProject && entry.type !== "overtime");
     const newRows: TimeRow[] = [];
     for (const entry of copyable) {
       const key = rowKey(entry.project, entry.type);
@@ -1305,7 +1358,7 @@ function TimeEntries() {
         if (next.some((item) => item.date === date && rowKey(item.project, item.type) === key)) kept++;
         else if (cellLock(undefined, entry.type, date)) ahead++;
         else {
-          next = [...next, { id: nextId(next), date, project: entry.project, type: entry.type, minutes: entry.minutes, comment: "", status: "draft" }];
+          next = [...next, { id: nextId(next), date, project: entry.project, type: entry.type, minutes: entry.minutes, comment: "", status: "draft", task: entry.task }];
           created++;
         }
       }
@@ -1314,7 +1367,7 @@ function TimeEntries() {
     if (created) setSaved(true);
     const rowCount = new Set(copyable.map((entry) => rowKey(entry.project, entry.type))).size;
     const parts = [`Copied ${plural(rowCount, "row", "rows")} from week ${isoWeek(lastStart)}${copyHours ? ` with ${plural(created, "entry", "entries")}` : ""}.`];
-    if (copyable.length < last.length) parts.push("Vacation and absence aren't copied.");
+    if (copyable.length < last.length) parts.push("Vacation, absence and overtime aren't copied.");
     if (kept) parts.push(`${plural(kept, "cell you'd filled was", "cells you'd filled were")} kept.`);
     if (ahead) parts.push(`${plural(ahead, "day is", "days are")} ahead of today and left empty.`);
     setToast(parts.join(" "));
@@ -1374,7 +1427,6 @@ function TimeEntries() {
   function addRow(row: TimeRow) {
     setAddedRows({ ...addedRows, [weekStart]: [...(addedRows[weekStart] ?? []), row] });
     setModal(null);
-    setRowQuery("");
     if (!narrow) setFocusRow(row.key);
     else if (!cellLock(undefined, row.type, day)) openSheet(row, day);
   }
@@ -1383,16 +1435,49 @@ function TimeEntries() {
     setAddedRows({ ...addedRows, [weekStart]: (addedRows[weekStart] ?? []).filter((item) => item.key !== row.key) });
   }
 
+  // Fixing a wrong type: the row's open entries move with it. Overtime is never a target, it needs its own pre-approval.
+  function changeRowType(row: TimeRow, type: TimeTypeCode) {
+    const key = rowKey(row.project, type);
+    if (rows.some((item) => item.key === key)) return;
+    setEntries(entries.map((entry) => (entry.date >= dates[0] && entry.date <= dates[6] && rowKey(entry.project, entry.type) === row.key && isEditable(entry) ? { ...entry, type } : entry)));
+    setAddedRows({ ...addedRows, [weekStart]: [...(addedRows[weekStart] ?? []).filter((item) => item.key !== row.key), { key, project: row.project, type }] });
+    setSelected(null);
+  }
+
+  function openOvertime(project: TimeProject) {
+    setOvertime({ project: project.id, approver: project.pm, ordered: false });
+    setModal("overtime");
+  }
+
+  function openRequest() {
+    setRequest({ query: "", project: "" });
+    setModal("request");
+  }
+
   function openSheet(row: TimeRow, date: string) {
     const entry = entryAt(row, date);
-    setSheet({ row, date, hours: entry ? fmtH(entry.minutes) : "", comment: entry?.comment ?? "", error: "" });
+    setSheet({
+      row,
+      date,
+      hours: entry ? fmtH(entry.minutes) : "",
+      comment: entry?.comment ?? "",
+      customerText: entry?.customerText ?? "",
+      task: entry?.task ?? lastTask(entries, row.project) ?? "",
+      outsideHours: entry?.outsideHours ?? false,
+      error: "",
+    });
   }
 
   function saveSheet() {
     if (!sheet) return;
     const parsed = parseHours(sheet.hours);
     if ("error" in parsed) return setSheet({ ...sheet, error: parsed.error });
-    writeCell(sheet.row, sheet.date, parsed.minutes, sheet.comment.trim());
+    writeCell(sheet.row, sheet.date, parsed.minutes, {
+      comment: sheet.comment.trim(),
+      customerText: sheet.customerText.trim() || undefined,
+      task: sheet.task || undefined,
+      outsideHours: sheet.outsideHours || undefined,
+    });
     setSheet(null);
   }
 
@@ -1414,30 +1499,31 @@ function TimeEntries() {
     setSelected(null);
   }
 
-  const usableProjects = [...activeAssignments(weekStart).map((item) => projectOf(item.project)), ...timeProjects.filter((item) => item.kind === "internal")].filter(
-    (item): item is TimeProject => !!item,
-  );
-  const query = rowQuery.trim().toLowerCase();
-  const rowOptions: TimeRow[] = [
-    ...usableProjects.flatMap((project) => typesForKind[project.kind].map((type) => ({ key: rowKey(project.id, type), project: project.id, type }))),
-    ...timeTypes.filter((type) => !type.needsProject).map((type) => ({ key: rowKey(null, type.code), project: null, type: type.code })),
-  ]
-    .filter((option) => !rows.some((row) => row.key === option.key))
-    .filter((option) => {
-      const project = projectOf(option.project);
-      return !query || `${project?.name ?? ""} ${project?.account ?? ""} ${typeOf(option.type).name}`.toLowerCase().includes(query);
-    });
-
   const absenceList = absenceDays();
   const absenceMinutes = parseHours(absence.hours);
+  const issueCounts = toSubmit.reduce<Record<string, number>>((counts, entry) => {
+    for (const issue of entryIssues(entry)) {
+      const project = projectOf(entry.project);
+      const name = `${rowName({ key: "", project: entry.project, type: entry.type })}${project && !project.home && entry.type !== "client_work" ? ` (${typeOf(entry.type).name})` : ""}`;
+      const key = `${name} needs ${issue}`;
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    return counts;
+  }, {});
   const blockers = [
     ...dates.filter((date) => dayMinutes(date) > 24 * 60).map((date) => `${fmtDay(date)} has ${fmtH(dayMinutes(date))} h. A day can't have more than 24 h.`),
     ...(Object.keys(errors).some((id) => dates.some((date) => id.endsWith(`@${date}`))) ? ["Some cells have a value that isn't saved. Fix the red cells first."] : []),
+    ...Object.entries(issueCounts).map(([text, count]) => `${text} on ${plural(count, "entry", "entries")}.`),
   ];
   const warnings = [
     ...dates.filter((date) => dayMinutes(date) > 10 * 60 && dayMinutes(date) <= 24 * 60).map((date) => `${fmtDay(date)} has ${fmtH(dayMinutes(date))} h, more than 10 h.`),
     ...(total < standardWeek ? [`${fmtH(total)} h is below the 40 h standard week.`] : []),
   ];
+  const assignedIds = new Set(activeAssignments(weekStart).map((item) => item.project));
+  const requestQuery = request.query.trim().toLowerCase();
+  const requestable = timeProjects
+    .filter((item) => !item.closed && !item.home && !assignedIds.has(item.id))
+    .filter((item) => !requestQuery || `${item.name} ${item.account}`.toLowerCase().includes(requestQuery));
 
   const modalHead = (title: string, text: string, onClose = () => setModal(null)) => (
     <div className="panel-heading">
@@ -1446,12 +1532,141 @@ function TimeEntries() {
     </div>
   );
 
+  const typeChip = (project: string | null, type: TimeTypeCode, label = typeOf(type).name) => {
+    const key = rowKey(project, type);
+    const added = rows.some((row) => row.key === key);
+    const target = projectOf(project);
+    return (
+      <button
+        className={`ar-chip ${added ? "is-added" : ""} ${type === "overtime" ? "ar-chip--overtime" : ""}`}
+        disabled={added}
+        key={key}
+        onClick={() => (type === "overtime" && target ? openOvertime(target) : addRow({ key, project, type }))}
+        title={type === "overtime" ? "Only overtime the customer ordered and pays for" : undefined}
+        type="button"
+      >
+        {added ? <Icon name="check" size={12} /> : null}
+        {label}
+      </button>
+    );
+  };
+
+  const projectOption = (project: TimeProject) => (
+    <div className="ar-project" key={project.id}>
+      <div className="ar-project-copy">
+        <strong>{project.kind === "internal" ? `Or on ${project.name}` : project.name}</strong>
+        <small>
+          {project.account} · PM {project.pm}
+          {project.tasks ? " · tasks" : ""}
+          {project.customerText ? " · customer text on each entry" : ""}
+        </small>
+      </div>
+      <div className="ar-chips">{allowedTypes(project).map((type) => typeChip(project.id, type))}</div>
+    </div>
+  );
+
   const modalBody = () => {
+    if (modal === "addRow")
+      return (
+        <>
+          {modalHead("Add a row", "One click adds the row. You can change the type on the row if you pick the wrong one.")}
+          <div className="ar-section">
+            <h3>Your customer projects</h3>
+            {myProjects.filter((project) => project.kind === "client").map(projectOption)}
+          </div>
+          {homeProject && (
+            <div className="ar-section">
+              <h3>Internal</h3>
+              <p>Work that isn't for a customer. No project to choose.</p>
+              <div className="ar-chips">{allowedTypes(homeProject).map((type) => typeChip(homeProject.id, type))}</div>
+              {myProjects.filter((project) => project.kind === "internal").map(projectOption)}
+            </div>
+          )}
+          <div className="ar-section">
+            <h3>Time away</h3>
+            <div className="ar-chips">
+              {timeTypes.filter((type) => !type.needsProject).map((type) => typeChip(null, type.code))}
+              <Button className="text-button" onClick={openAbsence}>Several days at once</Button>
+            </div>
+          </div>
+          <div className="ar-footer">
+            <span>Can't find your project? You can only log time on projects you've been added to.</span>
+            <Button className="secondary-button" onClick={openRequest}>Ask to be added</Button>
+          </div>
+        </>
+      );
+    if (modal === "request") {
+      const picked = projectOf(request.project);
+      return (
+        <>
+          {modalHead("Ask to be added to a project", "The project manager gets your request and adds you to the team.", () => setModal("addRow"))}
+          <label className="field tw-search">
+            <span>Project or customer</span>
+            <TextInput autoFocus onChange={(event) => setRequest({ query: event.target.value, project: "" })} placeholder="Type a few letters" value={request.query} />
+          </label>
+          <div className="tw-options">
+            {requestable.length ? (
+              requestable.slice(0, 8).map((project) => (
+                <button className={`tw-option ${request.project === project.id ? "is-active" : ""}`} key={project.id} onClick={() => setRequest({ ...request, project: project.id })} type="button">
+                  <strong>{project.name}</strong>
+                  <small>{project.account} · PM {project.pm}</small>
+                </button>
+              ))
+            ) : (
+              <p className="tw-hint">No active project matches.</p>
+            )}
+          </div>
+          <Button
+            className="primary-button compact full tw-confirm"
+            disabled={!picked}
+            onClick={() => {
+              setModal(null);
+              setToast(`${picked?.pm} has your request. ${picked?.name} shows up in your week once you're added.`);
+            }}
+          >
+            {picked ? `Send request to ${picked.pm}` : "Pick a project"}
+          </Button>
+        </>
+      );
+    }
+    if (modal === "overtime") {
+      const project = projectOf(overtime.project);
+      if (!project) return null;
+      return (
+        <>
+          {modalHead(`Overtime on ${project.name}`, `${project.account} pays an overtime rate for this project.`, () => setModal("addRow"))}
+          <ul className="tw-rules">
+            <li>The customer ordered the overtime and is billed for it.</li>
+            <li>A manager or BO approved it before the work started.</li>
+            <li>It's outside ordinary hours: evenings, mornings, weekends or public holidays.</li>
+            <li>Extra hours that you even out with time off are not overtime.</li>
+          </ul>
+          <div className="form-grid">
+            <label className="field field--wide">
+              <span>Approved in advance by</span>
+              <select onChange={(event) => setOvertime({ ...overtime, approver: event.target.value })} value={overtime.approver}>
+                {overtimeApprovers.map((name) => <option key={name} value={name}>{name}{name === project.pm ? " (project manager)" : ""}</option>)}
+              </select>
+            </label>
+          </div>
+          <button aria-checked={overtime.ordered} className="toggle toggle-button" onClick={() => setOvertime({ ...overtime, ordered: !overtime.ordered })} role="switch" type="button">
+            <span className={`toggle-switch ${overtime.ordered ? "is-on" : ""}`}><i /></span>The customer ordered this overtime
+          </button>
+          <Button
+            className="primary-button compact full tw-confirm"
+            disabled={!overtime.ordered}
+            onClick={() => addRow({ key: rowKey(project.id, "overtime"), project: project.id, type: "overtime", preApprovedBy: overtime.approver })}
+          >
+            Add overtime row
+          </Button>
+        </>
+      );
+    }
     if (modal === "copy")
       return (
         <>
           {modalHead("Copy last week", `Rows from week ${isoWeek(addDays(weekStart, -7))} come in as Draft.`)}
-          <p className="tw-lead">Vacation and absence are never copied, and cells you've already filled are never changed.</p>
+          <p className="tw-lead">Vacation, absence and overtime are never copied, and cells you've already filled are never changed.</p>
           <button aria-checked={copyHours} className="toggle toggle-button" onClick={() => setCopyHours(!copyHours)} role="switch" type="button">
             <span className={`toggle-switch ${copyHours ? "is-on" : ""}`}><i /></span>Include hours
           </button>
@@ -1524,38 +1739,6 @@ function TimeEntries() {
           )}
         </>
       );
-    if (modal === "addRow")
-      return (
-        <>
-          {modalHead("Add a row", "Search for a project or a type of work.")}
-          <label className="field tw-search">
-            <span>Project or type</span>
-            <TextInput
-              autoFocus
-              onChange={(event) => setRowQuery(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && rowOptions[0] && addRow(rowOptions[0])}
-              placeholder="e.g. Zephyr, travel, vacation"
-              value={rowQuery}
-            />
-          </label>
-          <div className="tw-options">
-            {rowOptions.length ? (
-              rowOptions.slice(0, 12).map((option) => {
-                const project = projectOf(option.project);
-                const type = typeOf(option.type);
-                return (
-                  <button className="tw-option" key={option.key} onClick={() => addRow(option)} type="button">
-                    <strong>{project ? `${project.name} · ${type.name}` : type.name}</strong>
-                    <small>{project ? `${project.account}${type.billable ? " · billable" : ""}` : "No project needed"}</small>
-                  </button>
-                );
-              })
-            ) : (
-              <p className="tw-hint">No match. Only projects you're assigned to and internal projects are listed.</p>
-            )}
-          </div>
-        </>
-      );
     return (
       <>
         {modalHead("Week actions", `${weekLabel} · ${rangeLabel}`)}
@@ -1572,18 +1755,20 @@ function TimeEntries() {
   const sheetBody = (current: TimeSheet) => {
     const entry = entryAt(current.row, current.date);
     const lock = cellLock(entry, current.row.type, current.date);
-    const type = typeOf(current.row.type);
     const project = projectOf(current.row.project);
     const left = standardDay - (dayMinutes(current.date) - (entry?.minutes ?? 0));
     const chips = [8 * 60, 4 * 60, ...(left > 0 && left !== 8 * 60 && left !== 4 * 60 ? [left] : [])];
+    const previousText = entries
+      .filter((item) => item.project === current.row.project && item.customerText && item.id !== entry?.id)
+      .sort((a, b) => b.date.localeCompare(a.date))[0]?.customerText;
     return (
       <>
-        {modalHead(project?.name ?? type.name, `${project ? `${type.name} · ` : ""}${fmtLongDay(current.date)}`, () => setSheet(null))}
+        {modalHead(rowName(current.row), `${rowSub(current.row)} · ${fmtLongDay(current.date)}`, () => setSheet(null))}
         {entry?.pmComment && <p className="tw-msg tw-msg--error"><b>Rejected by your PM:</b> {entry.pmComment}</p>}
         {lock ? (
           <>
             <p className="tw-msg tw-msg--info">{entry ? `${fmtH(entry.minutes)} h · ${lock}.` : `${lock}.`}</p>
-            {entry?.comment && <p className="tw-lead">“{entry.comment}”</p>}
+            {entry?.customerText && <p className="tw-lead">“{entry.customerText}”</p>}
           </>
         ) : (
           <form
@@ -1603,8 +1788,31 @@ function TimeEntries() {
                 </button>
               ))}
             </div>
+            {project?.tasks && (
+              <label className="field">
+                <span>Task</span>
+                <select onChange={(event) => setSheet({ ...current, task: event.target.value })} value={current.task}>
+                  <option value="">Choose a task</option>
+                  {project.tasks.map((task) => <option key={task} value={task}>{task}</option>)}
+                </select>
+              </label>
+            )}
+            {project?.customerText && (
+              <label className="field">
+                <span>Text for the customer · needed to submit</span>
+                <TextInput maxLength={200} onChange={(event) => setSheet({ ...current, customerText: event.target.value })} placeholder="Shown on the invoice basis" value={current.customerText} />
+                {previousText && !current.customerText && (
+                  <Button className="text-button tw-reuse" onClick={() => setSheet({ ...current, customerText: previousText })} type="button">Use “{previousText}”</Button>
+                )}
+              </label>
+            )}
+            {current.row.type === "overtime" && !isWeekend(current.date) && (
+              <button aria-checked={current.outsideHours} className="toggle toggle-button tw-sheet-toggle" onClick={() => setSheet({ ...current, outsideHours: !current.outsideHours })} role="switch" type="button">
+                <span className={`toggle-switch ${current.outsideHours ? "is-on" : ""}`}><i /></span>Outside ordinary hours (evening or morning)
+              </button>
+            )}
             <label className="field">
-              <span>Comment</span>
+              <span>Internal comment</span>
               <TextInput maxLength={500} onChange={(event) => setSheet({ ...current, comment: event.target.value })} placeholder="Optional" value={current.comment} />
             </label>
             {current.error && <p className="form-message form-message--error" role="alert">{current.error}</p>}
@@ -1631,7 +1839,7 @@ function TimeEntries() {
     <>
       {modal && (
         <div className="modal-backdrop tw-sheet" onClick={() => setModal(null)}>
-          <div aria-modal="true" className="modal-card" onClick={(event) => event.stopPropagation()} role="dialog">{modalBody()}</div>
+          <div aria-modal="true" className={`modal-card ${modal === "addRow" ? "ar-card" : ""}`} onClick={(event) => event.stopPropagation()} role="dialog">{modalBody()}</div>
         </div>
       )}
       {sheet && (
@@ -1680,12 +1888,18 @@ function TimeEntries() {
           {rows.map((row) => {
             const entry = entryAt(row, day);
             const lock = cellLock(entry, row.type, day);
-            const project = projectOf(row.project);
+            const issues = entry && isEditable(entry) ? entryIssues(entry) : [];
+            const note =
+              entry?.status === "rejected"
+                ? "Rejected, tap to fix"
+                : issues.length
+                  ? `Needs ${issues.join(" and ")}`
+                  : `${rowSub(row)}${entry && entry.status !== "draft" ? ` · ${statusLabel[entry.status]}` : ""}`;
             return (
-              <button className={`td-row ${entry ? `is-${entry.status}` : ""}`} disabled={!!lock && !entry} key={row.key} onClick={() => openSheet(row, day)} type="button">
+              <button className={`td-row ${entry ? `is-${entry.status}` : ""} ${issues.length ? "is-incomplete" : ""}`} disabled={!!lock && !entry} key={row.key} onClick={() => openSheet(row, day)} type="button">
                 <span className="td-row-copy">
                   <strong>{rowName(row)}</strong>
-                  <small>{entry?.status === "rejected" ? "Rejected, tap to fix" : `${project ? typeOf(row.type).name : "No project needed"}${entry && entry.status !== "draft" ? ` · ${statusLabel[entry.status]}` : ""}`}</small>
+                  <small>{note}</small>
                 </span>
                 <span className="td-hours">{entry ? `${fmtH(entry.minutes)} h` : lock ? "–" : <Icon name="plus" size={16} />}</span>
               </button>
@@ -1703,6 +1917,85 @@ function TimeEntries() {
 
   const selRow = selected && dates.includes(selected.date) ? rows.find((row) => row.key === selected.row) : undefined;
   const selEntry = selRow && selected ? entryAt(selRow, selected.date) : undefined;
+
+  const detail = () => {
+    if (!selRow || !selected) return <p className="tw-hint">Click a cell to see its status or add details. Tab and the arrow keys move between cells, Enter moves down and Esc undoes a change.</p>;
+    const project = projectOf(selRow.project);
+    const type = typeOf(selRow.type);
+    const editable = !!selEntry && isEditable(selEntry);
+    const issues = selEntry && editable ? entryIssues(selEntry) : [];
+    const previousText = entries
+      .filter((entry) => entry.project === selRow.project && entry.customerText && entry.id !== selEntry?.id)
+      .sort((a, b) => b.date.localeCompare(a.date))[0]?.customerText;
+    const error = errors[cellId(selRow.key, selected.date)];
+    return (
+      <>
+        <div className="tw-detail-head">
+          <strong>{fmtLongDay(selected.date)} · {rowName(selRow)}</strong>
+          <small>
+            {type.name} · {type.billable ? "Billable" : "Not billable"} · {selEntry ? statusLabel[selEntry.status] : cellLock(undefined, selRow.type, selected.date) || "No time yet"}
+            {selEntry?.preApprovedBy ? ` · overtime pre-approved by ${selEntry.preApprovedBy}` : ""}
+          </small>
+        </div>
+        <div className="tw-detail-fields">
+          {project?.tasks && (
+            <label className="field">
+              <span>Task</span>
+              <select disabled={!editable} onChange={(event) => selEntry && updateEntry(selEntry.id, { task: event.target.value || undefined })} value={selEntry?.task ?? ""}>
+                <option value="">{selEntry ? "Choose a task" : "Enter hours first"}</option>
+                {project.tasks.map((task) => <option key={task} value={task}>{task}</option>)}
+              </select>
+            </label>
+          )}
+          {project?.customerText && (
+            <label className="field">
+              <span>Text for the customer · needed to submit</span>
+              <TextInput
+                disabled={!editable}
+                maxLength={200}
+                onChange={(event) => selEntry && updateEntry(selEntry.id, { customerText: event.target.value })}
+                placeholder={selEntry ? "Shown on the invoice basis" : "Enter hours first"}
+                value={selEntry?.customerText ?? ""}
+              />
+              {editable && previousText && !selEntry?.customerText && (
+                <Button className="text-button tw-reuse" onClick={() => selEntry && updateEntry(selEntry.id, { customerText: previousText })}>Use “{previousText}”</Button>
+              )}
+            </label>
+          )}
+          {selRow.type === "overtime" && !isWeekend(selected.date) && (
+            <button
+              aria-checked={!!selEntry?.outsideHours}
+              className="toggle toggle-button tw-detail-toggle"
+              disabled={!editable}
+              onClick={() => selEntry && updateEntry(selEntry.id, { outsideHours: !selEntry.outsideHours })}
+              role="switch"
+              type="button"
+            >
+              <span className={`toggle-switch ${selEntry?.outsideHours ? "is-on" : ""}`}><i /></span>Outside ordinary hours (evening or morning)
+            </button>
+          )}
+          <label className="field">
+            <span>Internal comment</span>
+            <TextInput
+              disabled={!editable}
+              maxLength={500}
+              onChange={(event) => selEntry && updateEntry(selEntry.id, { comment: event.target.value })}
+              placeholder={selEntry ? "Only your team sees this (optional)" : "Enter hours first"}
+              value={selEntry?.comment ?? ""}
+            />
+          </label>
+        </div>
+        {error && <p className="tw-msg tw-msg--error">{error} Esc undoes the change.</p>}
+        {issues.length > 0 && <p className="tw-msg tw-msg--warn">Before you can submit, this entry needs {issues.join(" and ")}.</p>}
+        {selEntry?.pmComment && (
+          <p className="tw-msg tw-msg--error">
+            <b>Rejected by your PM:</b> {selEntry.pmComment}{" "}
+            {selEntry.status === "rejected" ? "Change the hours or move them to the right row, then submit again." : "You've changed it. Submit the week again."}
+          </p>
+        )}
+      </>
+    );
+  };
 
   return (
     <>
@@ -1736,7 +2029,7 @@ function TimeEntries() {
           <div>
             <Heading level={2}>Your week</Heading>
             <p>
-              {plural(assignedCount, "project assignment fills", "project assignments fill")} the rows{hiddenCount ? ` (${hiddenCount} closed or ended hidden)` : ""}. Type 7.5 or 7,5; it saves as you go.
+              {plural(assignedCount, "project you're on fills", "projects you're on fill")} the rows{hiddenCount ? ` (${hiddenCount} closed or ended hidden)` : ""}. Type 7.5 or 7,5; it saves as you go.
             </p>
           </div>
           <Button className="secondary-button" onClick={() => setModal("addRow")}><Icon name="plus" size={15} /> Add row</Button>
@@ -1762,16 +2055,36 @@ function TimeEntries() {
               {rows.map((row, r) => {
                 const project = projectOf(row.project);
                 const type = typeOf(row.type);
-                const rowTotal = sumMinutes(inWeek.filter((entry) => rowKey(entry.project, entry.type) === row.key));
+                const rowEntries = inWeek.filter((entry) => rowKey(entry.project, entry.type) === row.key);
+                const rowTotal = sumMinutes(rowEntries);
+                const typeOptions = project && !row.assigned && row.type !== "overtime" ? allowedTypes(project).filter((code) => code !== "overtime") : [];
+                const canChangeType = typeOptions.length > 1 && rowEntries.every(isEditable);
+                const task = project?.tasks ? lastTask(entries, row.project) : undefined;
                 return (
                   <tr key={row.key}>
                     <td className="tw-rowhead">
                       <div className="tw-rowcopy">
                         <strong>{rowName(row)}</strong>
-                        <small>{project ? `${project.account} · ${type.name}` : "No project needed"}</small>
+                        {canChangeType ? (
+                          <small className="tw-type-line">
+                            {project?.home ? "Internal hours" : project?.account} ·{" "}
+                            <select aria-label={`Type for ${rowName(row)}`} className="tw-type" onChange={(event) => changeRowType(row, event.target.value as TimeTypeCode)} value={row.type}>
+                              {typeOptions.map((code) => (
+                                <option disabled={code !== row.type && rows.some((item) => item.key === rowKey(row.project, code))} key={code} value={code}>
+                                  {typeOf(code).name}
+                                </option>
+                              ))}
+                            </select>
+                          </small>
+                        ) : (
+                          <small>{rowSub(row)}</small>
+                        )}
                       </div>
                       <div className="tw-rowtools">
                         {type.billable && <Badge tone="green">Billable</Badge>}
+                        {row.type === "overtime" && <span className="tw-meta">Pre-approved by {row.preApprovedBy ?? rowEntries[0]?.preApprovedBy ?? "?"}</span>}
+                        {project?.tasks && <span className="tw-meta">Task: {task ?? "choose per entry"}</span>}
+                        {project?.customerText && <span className="tw-meta">Customer text on each entry</span>}
                         {canFill(row) && <Button className="text-button" onClick={() => fillRow(row)} title="Fills each open weekday up to 8 h">Fill 8 h days</Button>}
                         {!row.assigned && !rowTotal && <Button className="text-button tw-remove" onClick={() => removeRow(row)}>Remove</Button>}
                       </div>
@@ -1781,13 +2094,22 @@ function TimeEntries() {
                       const lock = cellLock(entry, row.type, date);
                       const id = cellId(row.key, date);
                       const error = errors[id];
-                      const tip = error || (entry?.pmComment && entry.status === "rejected" ? `Rejected: ${entry.pmComment}` : "") || entry?.comment || lock || undefined;
+                      const issues = entry && isEditable(entry) ? entryIssues(entry) : [];
+                      const tip =
+                        error ||
+                        (entry?.pmComment && entry.status === "rejected" ? `Rejected: ${entry.pmComment}` : "") ||
+                        (issues.length ? `Needs ${issues.join(" and ")}` : "") ||
+                        entry?.customerText ||
+                        entry?.comment ||
+                        lock ||
+                        undefined;
                       const classes = [
                         "tw-cell",
                         isWeekend(date) && "is-weekend",
                         date === TODAY && "is-today",
                         entry && `is-${entry.status}`,
                         lock && !entry && "is-closed",
+                        issues.length && "is-incomplete",
                         error && "is-invalid",
                         selected?.row === row.key && selected.date === date && "is-selected",
                       ];
@@ -1809,7 +2131,7 @@ function TimeEntries() {
                             tabIndex={lock && !entry ? -1 : 0}
                             value={drafts[id] ?? (entry ? fmtH(entry.minutes) : "")}
                           />
-                          {entry?.comment && <i className="tw-note" />}
+                          {(entry?.comment || entry?.customerText) && <i className="tw-note" />}
                         </td>
                       );
                     })}
@@ -1840,40 +2162,11 @@ function TimeEntries() {
           <span><i className="tw-key tw-key--submitted" />Submitted</span>
           <span><i className="tw-key tw-key--approved" />Approved</span>
           <span><i className="tw-key tw-key--rejected" />Rejected</span>
+          <span><i className="tw-key tw-key--incomplete" />Needs details</span>
           <span><i className="tw-key tw-key--closed" />Not open yet</span>
-          <span><i className="tw-note tw-note--legend" />Has a comment</span>
+          <span><i className="tw-note tw-note--legend" />Has a text or comment</span>
         </div>
-        <div className="tw-detail">
-          {selRow && selected ? (
-            <>
-              <div className="tw-detail-head">
-                <strong>{fmtLongDay(selected.date)} · {rowName(selRow)}</strong>
-                <small>
-                  {typeOf(selRow.type).name} · {typeOf(selRow.type).billable ? "Billable" : "Not billable"} · {selEntry ? statusLabel[selEntry.status] : cellLock(undefined, selRow.type, selected.date) || "No time yet"}
-                </small>
-              </div>
-              <label className="field">
-                <span>Comment on this entry</span>
-                <TextInput
-                  disabled={!selEntry || !isEditable(selEntry)}
-                  maxLength={500}
-                  onChange={(event) => selEntry && setComment(selEntry.id, event.target.value)}
-                  placeholder={selEntry ? "What did you work on? (optional)" : "Enter hours first"}
-                  value={selEntry?.comment ?? ""}
-                />
-              </label>
-              {errors[cellId(selRow.key, selected.date)] && <p className="tw-msg tw-msg--error tw-wide">{errors[cellId(selRow.key, selected.date)]} Esc undoes the change.</p>}
-              {selEntry?.pmComment && (
-                <p className="tw-msg tw-msg--error tw-wide">
-                  <b>Rejected by your PM:</b> {selEntry.pmComment}{" "}
-                  {selEntry.status === "rejected" ? "Change the hours or move them to the right row, then submit again." : "You've changed it. Submit the week again."}
-                </p>
-              )}
-            </>
-          ) : (
-            <p className="tw-hint">Click a cell to see its status or add a comment. Tab and the arrow keys move between cells, Enter moves down and Esc undoes a change.</p>
-          )}
-        </div>
+        <div className="tw-detail">{detail()}</div>
         <div className="split">
           <div className="split-bar"><span style={{ width: `${total ? Math.round((billable / total) * 100) : 0}%` }} /></div>
           <div className="split-legend">
