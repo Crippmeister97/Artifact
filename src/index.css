@@ -1083,3 +1083,12 @@ button.mini-row > .icon { color: var(--muted); }
 
 /* Add row: Internal Development can belong to an assignment */
 .ar-dev-for { margin: -2px 0 6px 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--muted); font-size: 11px; }
+
+/* Hours overview: sortable columns, short gap tags; demo helper in Time entries */
+.ho-sort { padding: 0; border: 0; display: inline-flex; align-items: center; gap: 5px; color: inherit; background: none; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.ho-sort span { color: #c9c5b8; font-size: 10px; }
+.ho-sort.is-active { color: var(--ink); }
+.ho-sort.is-active span { color: var(--ink); }
+.ho-table th.r .ho-sort { flex-direction: row-reverse; }
+.ho-tag { width: fit-content; margin-top: 5px; padding: 2px 7px; border-radius: 999px; display: block; color: var(--amber); background: var(--amber-soft); font-size: 10px; font-weight: 600; cursor: help; }
+.calm .tw-demo { margin-left: auto; color: var(--quiet); font-weight: 400; }

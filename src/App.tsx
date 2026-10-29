@@ -2284,6 +2284,20 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
           <Button className="tw-link" onClick={openAbsence}>Vacation or absence</Button>
           {toSubmit.length > 0 && banner?.action !== "Submit week" && <Button className="tw-link" onClick={() => setModal("submit")}>Submit week</Button>}
           {canRecall && <Button className="tw-link" onClick={recallWeek}>Recall</Button>}
+          {toSubmit.length > 0 && (
+            <Button
+              className="tw-link tw-demo"
+              onClick={() => {
+                const ids = new Set(toSubmit.map((entry) => entry.id));
+                setEntries(entries.filter((entry) => !ids.has(entry.id)));
+                setDismissed({ ...dismissed, [weekStart]: false });
+                setToast(`Cleared ${plural(ids.size, "draft entry", "draft entries")} in ${weekLabel.toLowerCase()}.`);
+              }}
+              title="For demos: removes this week's drafts. Submitted and approved time stays."
+            >
+              Clear this week's drafts
+            </Button>
+          )}
         </div>
       </section>
       {popover()}
@@ -2321,6 +2335,7 @@ type HoursPerson = {
 };
 type HoursPeriod = { key: string; kind: "month" | "week"; label: string; start: string; end: string };
 type DayState = "full" | "partial" | "none" | "absence" | "off" | "future";
+type HoursSort = "name" | "expected" | "reported" | "missing" | "last";
 type HoursFilter = "all" | "missing" | "waiting" | "inactive" | "afterLock" | "empty";
 type MonthLock = { at: string; by: string };
 type Unlock = { person: string; month: string; until: string; reason: string; at: string; by: string };
@@ -2463,6 +2478,7 @@ function HoursOverview() {
   const [periodKey, setPeriodKey] = useState("2026-10");
   const [filter, setFilter] = useState<HoursFilter>("all");
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<{ key: HoursSort; dir: 1 | -1 }>({ key: "name", dir: 1 });
   const [locks, setLocks] = useState<Record<string, MonthLock>>({ "2026-09": { at: addDays(monthDeadline("2026-09"), 1), by: "Automatic" } });
   const [unlocks, setUnlocks] = useState(initialUnlocks);
   const [modal, setModal] = useState<"lock" | "unlock" | null>(null);
@@ -2478,7 +2494,20 @@ function HoursOverview() {
   const cutoff = !current ? period.end : period.kind === "month" ? addDays(mondayOf(TODAY), -1) : YESTERDAY;
   const rows = hoursPeople
     .map((person) => ({ person, stats: personHours(person, period, locks, cutoff), unlock: unlocks.find((item) => item.person === person.id && item.month === month && item.until >= TODAY) }))
-    .sort((a, b) => b.stats.missing - a.stats.missing || b.stats.waiting + b.stats.draft - (a.stats.waiting + a.stats.draft) || a.person.name.localeCompare(b.person.name));
+    .sort((a, b) => {
+      const value = (row: typeof a) => (sort.key === "name" ? 0 : sort.key === "last" ? row.stats.last : row.stats[sort.key]);
+      const by = sort.key === "name" ? 0 : value(a) < value(b) ? -1 : value(a) > value(b) ? 1 : 0;
+      return by * sort.dir || a.person.name.localeCompare(b.person.name) * (sort.key === "name" ? sort.dir : 1);
+    });
+  const sortBy = (key: HoursSort) => setSort(sort.key === key ? { key, dir: sort.dir === 1 ? -1 : 1 } : { key, dir: key === "name" ? 1 : -1 });
+  const sortHead = (key: HoursSort, label: string, className = "") => (
+    <th aria-sort={sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : "none"} className={className}>
+      <button className={`ho-sort ${sort.key === key ? "is-active" : ""}`} onClick={() => sortBy(key)} type="button">
+        {label}
+        <span>{sort.key === key ? (sort.dir === 1 ? "↑" : "↓") : "↕"}</span>
+      </button>
+    </th>
+  );
 
   const total = (pick: (row: (typeof rows)[number]) => number) => rows.reduce((sum, row) => sum + pick(row), 0);
   const expected = total((row) => row.stats.expected);
@@ -2659,7 +2688,7 @@ function HoursOverview() {
         <div className="panel-heading">
           <div>
             <Heading level={2}>People</Heading>
-            <p>Expected = the person's working days × hours per day. Vacation and absence count as reported. Most missing first.</p>
+            <p>Expected = the person's working days × hours per day. Vacation and absence count as reported. Click a column to sort.</p>
           </div>
           <label className="search-field">
             <Icon name="search" size={15} />
@@ -2682,13 +2711,13 @@ function HoursOverview() {
           <table className="ho-table">
             <thead>
               <tr>
-                <th>Person</th>
+                {sortHead("name", "Person")}
                 <th>Days</th>
-                <th className="r">Expected</th>
-                <th>Reported</th>
-                <th className="r">Missing</th>
+                {sortHead("expected", "Expected", "r")}
+                {sortHead("reported", "Reported")}
+                {sortHead("missing", "Missing", "r")}
                 <th>Approval</th>
-                <th>Last time</th>
+                {sortHead("last", "Last time")}
                 <th />
               </tr>
             </thead>
@@ -2711,8 +2740,8 @@ function HoursOverview() {
                         <i className={`ho-day ho-day--${day.state}`} key={day.date} title={`${fmtDay(day.date)}: ${day.state === "off" ? "not a working day" : day.state === "future" ? `not counted yet${day.hours ? ` (${fmtHours(day.hours)} h so far)` : ""}` : day.state === "absence" ? "vacation or absence" : `${fmtHours(day.hours)} h`}`} />
                       ))}
                     </div>
-                    {stats.gap >= 3 && <small className="ho-hint">{stats.gap} working days in a row with no time. Vacation not logged?</small>}
-                    {!stats.reported && stats.expected > 0 && <small className="ho-hint">Nothing reported for this period yet</small>}
+                    {stats.gap >= 3 && <small className="ho-tag" title={`${stats.gap} working days in a row with no time. Vacation not logged?`}>{stats.gap}-day gap</small>}
+                    {!stats.reported && stats.expected > 0 && <small className="ho-tag" title="Nothing reported for this period yet">Nothing yet</small>}
                   </td>
                   <td className="r">
                     {fmtHours(stats.expected)}
