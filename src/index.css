@@ -1065,3 +1065,21 @@ button.mini-row > .icon { color: var(--muted); }
   .calm .ts-views { margin-left: 0; }
   .calm .ts-calendar, .calm .ts-history, .calm .ts-card { padding: 14px; }
 }
+
+/* Total row: something to glance at and check yourself against */
+.calm .tw-grid tfoot td { height: 64px; background: var(--soft); }
+.calm .tw-grid tfoot td:first-child { border-radius: 0 0 0 12px; }
+.calm .tw-grid tfoot td:last-child { border-radius: 0 0 12px 0; }
+.calm .tw-day-total strong { display: block; color: var(--ink); font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.calm .tw-day-total small { display: block; margin-top: 3px; font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.calm .tw-day-total.is-done small { color: var(--green); }
+.calm .tw-day-total.is-done small::before { content: "✓ "; }
+.calm .tw-day-total.is-short small { color: var(--amber); }
+.calm .tw-day-total.is-short strong { color: var(--amber); }
+.calm .tw-day-total.is-warn small, .calm .tw-day-total.is-warn strong { color: var(--amber); }
+.calm .tw-day-total.is-error small, .calm .tw-day-total.is-error strong { color: var(--red); }
+.calm .tw-day-total.is-quiet strong { color: #b7b3a7; font-weight: 500; }
+.calm .tw-day-total.is-quiet small { color: var(--quiet); }
+
+/* Add row: Internal Development can belong to an assignment */
+.ar-dev-for { margin: -2px 0 6px 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--muted); font-size: 11px; }

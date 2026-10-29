@@ -1040,7 +1040,6 @@ const timeProjects: TimeProject[] = [
   { id: "portal", name: "Service portal", account: "Forma Studio", kind: "client", pm: "Sofia L.", closed: true },
   { id: "desk", name: "Service desk", account: "Nordic Solutions", kind: "client", pm: "Mikael K.", support: true },
   { id: "dataplatform", name: "Data platform", account: "Klinte Logistik AB", kind: "client", pm: "Sofia L." },
-  { id: "zephyr", name: "Zephyr (internal)", account: "Sirocco", kind: "internal", pm: "Mikael K." },
   { id: "internal", name: "Internal hours", account: "Sirocco", kind: "internal", pm: "Mikael K.", home: true },
 ];
 
@@ -1049,7 +1048,6 @@ const timeProjects: TimeProject[] = [
 const myAssignments: { project: string; type: TimeTypeCode; ends: string | null }[] = [
   { project: "nova", type: "client_work", ends: null },
   { project: "crm", type: "client_work", ends: null },
-  { project: "zephyr", type: "internal_development", ends: null },
   { project: "portal", type: "client_work", ends: null },
   { project: "digital", type: "client_work", ends: "2026-09-30" },
 ];
@@ -1078,14 +1076,14 @@ const initialTimeEntries: TimeEntry[] = [
   seed("2026-10-21", "nova", "client_work", 8, "rejected", { pmComment: "Wrong project. Wednesday was the CRM migration workshop. /Johanna, PM" }),
   seed("2026-10-22", "crm", "client_work", 8, "submitted", { task: "Build", customerText: "Integration tests with SAP" }),
   seed("2026-10-23", "crm", "client_work", 6, "submitted", { task: "Build", customerText: "Fixed field mapping defects" }),
-  seed("2026-10-23", "zephyr", "internal_development", 2, "submitted", { comment: "Team learning session" }),
+  seed("2026-10-23", "internal", "internal_development", 2, "submitted", { comment: "Azure certification, module 3" }),
   seed("2026-10-24", "nova", "overtime", 3, "submitted", { comment: "Go-live cutover", preApprovedBy: "Johanna S." }),
   // Week 44, this week: drafts up to Wednesday, today still empty. The CRM entry still lacks its customer text.
   seed("2026-10-26", "nova", "client_work", 8, "draft"),
   seed("2026-10-27", "nova", "client_work", 4, "draft", { comment: "Workshop prep" }),
   seed("2026-10-27", "crm", "client_work", 4, "draft", { task: "Test" }),
   seed("2026-10-28", "nova", "client_work", 7.5, "draft"),
-  seed("2026-10-28", "zephyr", "internal_development", 0.5, "draft", { comment: "Sprint demo" }),
+  seed("2026-10-28", "crm", "internal_development", 0.5, "draft", { comment: "Salesforce admin course the customer asked for" }),
 ].map((entry, index) => ({ ...entry, id: index + 1 }));
 
 const statusLabel: Record<EntryStatus, string> = { draft: "Draft", submitted: "Submitted", approved: "Approved", rejected: "Rejected" };
@@ -1103,7 +1101,8 @@ const rowSub = (row: TimeRow) => {
   if (!project) return "Time away";
   if (project.home) return "Internal";
   if (row.type === "overtime") return `Overtime · pre-approved by ${row.preApprovedBy ?? "?"}`;
-  return project.kind === "internal" ? typeOf(row.type).name : project.account;
+  if (project.kind === "internal") return typeOf(row.type).name;
+  return row.type === "client_work" ? project.account : `${project.account} · ${typeOf(row.type).name}`;
 };
 const cellId = (row: string, date: string) => `${row}@${date}`;
 const isEditable = (entry?: TimeEntry) => !entry || entry.status === "draft" || entry.status === "rejected";
@@ -1187,8 +1186,10 @@ function cellLock(entry: TimeEntry | undefined, type: TimeTypeCode, date: string
 function entryIssues(entry: TimeEntry) {
   const project = projectOf(entry.project);
   const issues: string[] = [];
-  if (project?.tasks && !entry.task) issues.push("a task");
-  if (project?.customerText && !entry.customerText?.trim()) issues.push(`a text for ${project.account}`);
+  // Task and customer text belong to billable time; a course on a customer project needs neither.
+  const billable = typeOf(entry.type).billable;
+  if (billable && project?.tasks && !entry.task) issues.push("a task");
+  if (billable && project?.customerText && !entry.customerText?.trim()) issues.push(`a text for ${project.account}`);
   // Sirocco's overtime policy: only work outside ordinary hours counts. Weekends always are; weekdays must be confirmed.
   if (entry.type === "overtime" && !isWeekend(entry.date) && !entry.outsideHours) issues.push("confirmation that it was outside ordinary hours");
   return issues;
@@ -1682,6 +1683,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
   const modalBody = () => {
     if (modal === "addRow") {
       const projectsLeft = myProjects.filter((project) => !rows.some((row) => row.project === project.id));
+      const customerProjects = myProjects.filter((project) => project.kind === "client");
       const internalLeft = homeProject ? internalTypes.filter((type) => !rows.some((row) => row.key === rowKey(homeProject.id, type))) : [];
       const awayLeft = (["vacation", "absence"] as TimeTypeCode[]).filter((type) => !rows.some((row) => row.key === rowKey(null, type)));
       const option = (key: string, title: string, sub: string, row: TimeRow) => (
@@ -1705,7 +1707,23 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
           {homeProject && internalLeft.length > 0 && (
             <div className="ar-group">
               <h3>Internal</h3>
-              {internalLeft.map((type) => option(type, typeOf(type).name, "", { key: rowKey(homeProject.id, type), project: homeProject.id, type }))}
+              {internalLeft.map((type) =>
+                type === "internal_development" && customerProjects.length ? (
+                  <div className="ar-dev" key={type}>
+                    {option(type, typeOf(type).name, "Courses and certifications", { key: rowKey(homeProject.id, type), project: homeProject.id, type })}
+                    <span className="ar-dev-for">
+                      Needed for an assignment?
+                      {customerProjects
+                        .filter((project) => !rows.some((row) => row.key === rowKey(project.id, type)))
+                        .map((project) => (
+                          <Button className="tw-link" key={project.id} onClick={() => addRow({ key: rowKey(project.id, type), project: project.id, type })}>{project.name}</Button>
+                        ))}
+                    </span>
+                  </div>
+                ) : (
+                  option(type, typeOf(type).name, "", { key: rowKey(homeProject.id, type), project: homeProject.id, type })
+                ),
+              )}
             </div>
           )}
           {awayLeft.length > 0 && (
@@ -1902,7 +1920,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
   // The few extra fields an entry can have. Shared by the popover (computer) and the day sheet (phone).
   const extraFields = (project: TimeProject | undefined, row: TimeRow, date: string, values: { customerText: string; task: string; outsideHours: boolean }, set: (patch: Partial<TimeEntry>) => void, disabled: boolean, except?: number) => (
     <>
-      {project?.customerText && (
+      {project?.customerText && typeOf(row.type).billable && (
         <label className="field">
           <span>Text for {project.account}</span>
           <TextInput autoFocus={!values.customerText} disabled={disabled} maxLength={200} onChange={(event) => set({ customerText: event.target.value })} placeholder="What you did, in a few words" value={values.customerText} />
@@ -1915,7 +1933,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
           )}
         </label>
       )}
-      {project?.tasks && (
+      {project?.tasks && typeOf(row.type).billable && (
         <label className="tw-inline-field">
           <span>Task</span>
           <select disabled={disabled} onChange={(event) => set({ task: event.target.value || undefined })} value={values.task}>
@@ -2235,14 +2253,27 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
                 <td>Total</td>
                 {dates.map((date) => {
                   const minutes = dayMinutes(date);
+                  const expected = expectedOn(date);
                   const tone = dayTone(minutes);
+                  // Each day says whether it adds up: done, short by how much, or too much. Days ahead stay quiet.
+                  const check =
+                    tone === "is-error" ? "over 24 h"
+                    : tone === "is-warn" ? "over 10 h"
+                    : !expected || date > TODAY ? ""
+                    : minutes >= expected ? "done"
+                    : `${fmtH(expected - minutes)} h short`;
+                  const state = tone === "is-error" || tone === "is-warn" ? tone : check === "done" ? "is-done" : check ? "is-short" : "is-quiet";
                   return (
-                    <td className={tone} key={date} title={tone === "is-error" ? "More than 24 h: can't be submitted" : tone === "is-warn" ? "More than 10 h" : undefined}>
-                      {minutes ? fmtH(minutes) : "–"}
+                    <td className={`tw-day-total ${state}`} key={date}>
+                      <strong>{minutes ? fmtH(minutes) : "–"}</strong>
+                      {check && <small>{check}</small>}
                     </td>
                   );
                 })}
-                <td>{fmtH(total)}</td>
+                <td className={`tw-day-total ${total >= weekExpected ? "is-done" : "is-quiet"}`}>
+                  <strong>{fmtH(total)}</strong>
+                  <small>of {fmtH(weekExpected)}</small>
+                </td>
               </tr>
             </tfoot>
           </table>
