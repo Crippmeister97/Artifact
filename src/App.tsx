@@ -29,6 +29,7 @@ type Page =
   | "time"
   | "weekly"
   | "approvals"
+  | "hours"
   | "sales"
   | "projects"
   | "utilization"
@@ -141,6 +142,7 @@ const pageMeta: Record<Page, { title: string; eyebrow: string }> = {
   time: { title: "Time entries", eyebrow: "My work" },
   weekly: { title: "Weekly time summary", eyebrow: "My work" },
   approvals: { title: "Approvals", eyebrow: "Team" },
+  hours: { title: "Hours overview", eyebrow: "Finance · who has reported their time" },
   sales: { title: "Pipeline", eyebrow: "Opportunities · MEDDPICC qualification" },
   projects: { title: "Projects", eyebrow: "Delivery & financials" },
   utilization: { title: "Resource utilization", eyebrow: "Capacity planning" },
@@ -164,6 +166,10 @@ const navGroups: { label: string; items: { id: Page; label: string; icon?: IconN
       { id: "weekly", label: "Weekly time summary" },
       { id: "approvals", label: "Approvals" },
     ],
+  },
+  {
+    label: "Finance",
+    items: [{ id: "hours", label: "Hours overview", icon: "trend" }],
   },
   {
     label: "Customers",
@@ -1881,6 +1887,558 @@ function TimeEntries() {
   );
 }
 
+// Hours overview for finance (F15-S03) with the month lock and audited unlock (F13-S07).
+// Made-up people whose patterns mirror Dynamics on 29 Oct 2026: most hours arrive in a batch,
+// vacation is often not logged, part-timers look short against 40 h, some hours wait weeks
+// for PM approval, and a few people add time after the month is closed.
+
+type HoursKind = "client" | "internal" | "absence";
+type HoursStatus = "draft" | "submitted" | "approved";
+type HoursEntry = { person: string; date: string; hours: number; kind: HoursKind; status: HoursStatus; created: string };
+type HoursPerson = {
+  id: string;
+  name: string;
+  role: string;
+  unit: string;
+  pm: string;
+  days: number[];
+  perDay: number;
+  habit: "daily" | "weekly" | "monthly";
+  internal?: number;
+  short?: number;
+  vacation?: [string, string][];
+  sick?: [string, string][];
+  gaps?: [string, string][];
+  inactiveFrom?: string;
+  pending?: boolean;
+  drafts?: boolean;
+  late?: { from: string; to: string; created: string }[];
+};
+type HoursPeriod = { key: string; kind: "month" | "week"; label: string; start: string; end: string };
+type DayState = "full" | "partial" | "none" | "absence" | "off" | "future";
+type HoursFilter = "all" | "missing" | "waiting" | "inactive" | "afterLock" | "empty";
+type MonthLock = { at: string; by: string };
+type Unlock = { person: string; month: string; until: string; reason: string; at: string; by: string };
+
+const YESTERDAY = addDays(TODAY, -1);
+const fullWeek = [0, 1, 2, 3, 4];
+
+const hoursPeople: HoursPerson[] = [
+  { id: "on", name: "Oliver Nyström", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "daily" },
+  { id: "vl", name: "Viktor Larsson", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly" },
+  { id: "sa", name: "Sara Ahmed", role: "Consultant", unit: "SE", pm: "Mikael K.", days: [0, 1, 2, 3], perDay: 8, habit: "daily" },
+  { id: "mk", name: "Maja Karlsson", role: "Senior consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "monthly" },
+  { id: "nb", name: "Noah Berg", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", vacation: [["2026-10-12", "2026-10-16"]] },
+  { id: "eh", name: "Elias Holm", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "daily", gaps: [["2026-09-28", "2026-09-30"]], late: [{ from: "2026-09-28", to: "2026-09-30", created: "2026-10-06" }] },
+  { id: "al", name: "Alva Lindqvist", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", gaps: [["2026-10-05", "2026-10-09"]] },
+  { id: "hs", name: "Hugo Sandberg", role: "Architect", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "daily", pending: true },
+  { id: "eb", name: "Ella Bergström", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 4, habit: "daily" },
+  { id: "le", name: "Liam Ekström", role: "Consultant", unit: "IT", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", drafts: true },
+  { id: "ws", name: "Wilma Sjöberg", role: "Business developer", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "daily", internal: 8 },
+  { id: "lf", name: "Lucas Forsberg", role: "Consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly", inactiveFrom: "2026-10-16" },
+  { id: "se", name: "Saga Engström", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "daily", internal: 1 },
+  { id: "ad", name: "Adam Lund", role: "Senior consultant", unit: "US", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "monthly" },
+  { id: "fn", name: "Freja Nordin", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly", short: 1 },
+  { id: "lh", name: "Leo Hedlund", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "daily", sick: [["2026-10-20", "2026-10-21"]] },
+  { id: "aw", name: "Alice Wikström", role: "Consultant", unit: "AE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", pending: true },
+  { id: "od", name: "Oscar Dahl", role: "Consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "daily" },
+  { id: "eg", name: "Ebba Holmgren", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly", gaps: [["2026-09-21", "2026-09-25"]] },
+  { id: "is", name: "Isak Söderberg", role: "Consultant", unit: "IT", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "daily" },
+  { id: "nf", name: "Nora Fransson", role: "Project manager", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly", internal: 2 },
+  { id: "as", name: "Albin Strand", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly", gaps: [["2026-09-14", "2026-09-18"]], late: [{ from: "2026-09-14", to: "2026-09-18", created: "2026-10-14" }] },
+  { id: "ta", name: "Tilde Axelsson", role: "Consultant", unit: "SE", pm: "Sofia L.", days: [0, 1, 2, 3], perDay: 8, habit: "daily" },
+  { id: "me", name: "Melvin Ek", role: "Senior consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "monthly", vacation: [["2026-09-07", "2026-09-11"]] },
+];
+
+const inRanges = (date: string, ranges: [string, string][] = []) => ranges.some(([from, to]) => date >= from && date <= to);
+const monthOf = (date: string) => date.slice(0, 7);
+const fmtHours = (hours: number) => String(Math.round(hours * 10) / 10);
+
+function buildHours() {
+  const entries: HoursEntry[] = [];
+  for (const person of hoursPeople) {
+    for (let date = "2026-09-01"; date <= YESTERDAY; date = addDays(date, 1)) {
+      if (isWeekend(date) || !person.days.includes(dayIndex(date))) continue;
+      const late = person.late?.find((item) => date >= item.from && date <= item.to);
+      if (!late && (inRanges(date, person.gaps) || (person.inactiveFrom && date >= person.inactiveFrom))) continue;
+      const created = late?.created ?? (person.habit === "daily" ? date : person.habit === "weekly" ? addDays(mondayOf(date), 4) : date < "2026-10-01" ? "2026-10-02" : "2026-11-02");
+      if (created > TODAY) continue;
+      const week = isoWeek(date);
+      let status: HoursStatus = week <= 42 ? (person.pending || late ? "submitted" : "approved") : week === 43 ? "submitted" : "draft";
+      if (person.drafts && date >= "2026-10-01") status = "draft";
+      const base = { person: person.id, date, status, created };
+      if (inRanges(date, person.vacation) || inRanges(date, person.sick)) {
+        entries.push({ ...base, hours: person.perDay, kind: "absence" });
+        continue;
+      }
+      const worked = person.perDay - (person.short ?? 0);
+      const internal = Math.min(worked, person.internal ?? 0);
+      if (worked > internal) entries.push({ ...base, hours: worked - internal, kind: "client" });
+      if (internal) entries.push({ ...base, hours: internal, kind: "internal" });
+    }
+  }
+  return entries;
+}
+
+const hoursEntries = buildHours();
+
+const hoursPeriods: HoursPeriod[] = [
+  { key: "2026-09", kind: "month", label: "September 2026", start: "2026-09-01", end: "2026-09-30" },
+  { key: "2026-10", kind: "month", label: "October 2026", start: "2026-10-01", end: "2026-10-31" },
+  ...Array.from({ length: 8 }, (_, index) => {
+    const start = addDays("2026-09-07", index * 7);
+    return { key: start, kind: "week" as const, label: `Week ${isoWeek(start)} · ${shortDate(start)} – ${shortDate(addDays(start, 6))}`, start, end: addDays(start, 6) };
+  }),
+];
+
+const initialUnlocks: Unlock[] = [
+  { person: "eh", month: "2026-09", until: "2026-10-07", reason: "Forgot the client workshop on 28–30 Sep.", at: "2026-10-06", by: "Finance" },
+  { person: "as", month: "2026-09", until: "2026-10-15", reason: "Week 38 was in a draft that was never saved.", at: "2026-10-14", by: "Finance" },
+];
+
+const deadlineOf = (month: string) => `${monthOf(addDays(`${month}-28`, 7))}-02`;
+const monthLabel = (month: string) => hoursPeriods.find((period) => period.key === month)?.label ?? month;
+
+function workdaysBetween(from: string, to: string) {
+  let count = 0;
+  for (let date = addDays(from, 1); date <= to; date = addDays(date, 1)) if (!isWeekend(date)) count++;
+  return count;
+}
+
+// Only days up to the cutoff count. In the running month that's the last full week, so people who
+// report on Fridays don't show as missing mid-week.
+function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<string, MonthLock>, cutoff: string) {
+  const list = hoursEntries.filter((entry) => entry.person === person.id && entry.date >= period.start && entry.date <= period.end);
+  const counted = list.filter((entry) => entry.date <= cutoff);
+  const sum = (items: HoursEntry[]) => items.reduce((total, entry) => total + entry.hours, 0);
+  const days: { date: string; state: DayState; hours: number }[] = [];
+  let expected = 0;
+  let run = 0;
+  let longestGap = 0;
+  for (let date = period.start; date <= period.end; date = addDays(date, 1)) {
+    if (isWeekend(date)) continue;
+    const works = person.days.includes(dayIndex(date));
+    const onDay = list.filter((entry) => entry.date === date);
+    const hours = sum(onDay);
+    if (date > cutoff) {
+      days.push({ date, state: works ? "future" : "off", hours });
+      continue;
+    }
+    if (!works) {
+      days.push({ date, state: "off", hours });
+      continue;
+    }
+    expected += person.perDay;
+    const state: DayState = onDay.some((entry) => entry.kind === "absence") ? "absence" : hours >= person.perDay ? "full" : hours > 0 ? "partial" : "none";
+    run = state === "none" ? run + 1 : 0;
+    longestGap = Math.max(longestGap, run);
+    days.push({ date, state, hours });
+  }
+  const reported = sum(counted);
+  const all = hoursEntries.filter((entry) => entry.person === person.id);
+  const last = all.reduce((latest, entry) => (entry.date > latest ? entry.date : latest), "");
+  return {
+    days,
+    expected,
+    reported,
+    missing: Math.max(0, expected - reported),
+    client: sum(counted.filter((entry) => entry.kind === "client")),
+    internal: sum(counted.filter((entry) => entry.kind === "internal")),
+    absence: sum(counted.filter((entry) => entry.kind === "absence")),
+    approved: sum(list.filter((entry) => entry.status === "approved")),
+    waiting: sum(list.filter((entry) => entry.status === "submitted")),
+    draft: sum(list.filter((entry) => entry.status === "draft")),
+    afterLock: sum(list.filter((entry) => locks[monthOf(entry.date)] && entry.created > locks[monthOf(entry.date)].at)),
+    // A run of empty working days between reported ones usually means vacation that wasn't logged.
+    gap: reported > 0 ? longestGap : 0,
+    last,
+    idle: last ? workdaysBetween(last, TODAY) : 99,
+  };
+}
+
+function HoursOverview() {
+  const [periodKey, setPeriodKey] = useState("2026-10");
+  const [filter, setFilter] = useState<HoursFilter>("all");
+  const [query, setQuery] = useState("");
+  const [locks, setLocks] = useState<Record<string, MonthLock>>({ "2026-09": { at: "2026-10-03", by: "Finance" } });
+  const [unlocks, setUnlocks] = useState(initialUnlocks);
+  const [modal, setModal] = useState<"lock" | "unlock" | null>(null);
+  const [unlockForm, setUnlockForm] = useState({ person: "", until: addDays(TODAY, 3), reason: "", error: "" });
+  const [toast, setToast] = useState("");
+
+  const period = hoursPeriods.find((item) => item.key === periodKey) ?? hoursPeriods[0];
+  const sameKind = hoursPeriods.filter((item) => item.kind === period.kind);
+  const position = sameKind.indexOf(period);
+  const month = period.kind === "month" ? period.key : null;
+  const lock = month ? locks[month] : undefined;
+  const current = period.end >= TODAY;
+  const cutoff = !current ? period.end : period.kind === "month" ? addDays(mondayOf(TODAY), -1) : YESTERDAY;
+  const rows = hoursPeople
+    .map((person) => ({ person, stats: personHours(person, period, locks, cutoff), unlock: unlocks.find((item) => item.person === person.id && item.month === month && item.until >= TODAY) }))
+    .sort((a, b) => b.stats.missing - a.stats.missing || b.stats.waiting + b.stats.draft - (a.stats.waiting + a.stats.draft) || a.person.name.localeCompare(b.person.name));
+
+  const total = (pick: (row: (typeof rows)[number]) => number) => rows.reduce((sum, row) => sum + pick(row), 0);
+  const expected = total((row) => row.stats.expected);
+  const reported = total((row) => row.stats.reported);
+  const missing = total((row) => row.stats.missing);
+  const waiting = total((row) => row.stats.waiting);
+  const draft = total((row) => row.stats.draft);
+  const afterLock = total((row) => row.stats.afterLock);
+  const complete = rows.filter((row) => !row.stats.missing).length;
+  const missingPeople = rows.filter((row) => row.stats.missing > 0);
+
+  const tests: Record<HoursFilter, (row: (typeof rows)[number]) => boolean> = {
+    all: () => true,
+    missing: (row) => row.stats.missing > 0,
+    waiting: (row) => row.stats.waiting + row.stats.draft > 0,
+    inactive: (row) => row.stats.idle > 5,
+    empty: (row) => row.stats.gap >= 3,
+    afterLock: (row) => row.stats.afterLock > 0,
+  };
+  const filters: { key: HoursFilter; label: string }[] = [
+    { key: "all", label: "Everyone" },
+    { key: "missing", label: "Missing hours" },
+    { key: "waiting", label: "Not approved yet" },
+    { key: "empty", label: "Gaps, vacation not logged?" },
+    { key: "inactive", label: "No time for 7 days" },
+    { key: "afterLock", label: "Added after lock" },
+  ];
+  const search = query.trim().toLowerCase();
+  const visible = rows.filter(tests[filter]).filter((row) => !search || `${row.person.name} ${row.person.role} ${row.person.pm}`.toLowerCase().includes(search));
+
+  const byPm = Object.entries(
+    rows.reduce<Record<string, { hours: number; people: number; oldest: string }>>((groups, row) => {
+      if (!row.stats.waiting) return groups;
+      const oldest = hoursEntries
+        .filter((entry) => entry.person === row.person.id && entry.status === "submitted" && entry.date >= period.start && entry.date <= period.end)
+        .reduce((min, entry) => (entry.date < min ? entry.date : min), "9999");
+      const group = groups[row.person.pm] ?? { hours: 0, people: 0, oldest: "9999" };
+      groups[row.person.pm] = { hours: group.hours + row.stats.waiting, people: group.people + 1, oldest: oldest < group.oldest ? oldest : group.oldest };
+      return groups;
+    }, {}),
+  ).sort((a, b) => b[1].hours - a[1].hours);
+
+  const log = [
+    ...Object.entries(locks).map(([key, item]) => ({ at: item.at, text: `${item.by} locked ${monthLabel(key)}.` })),
+    ...unlocks.map((item) => ({
+      at: item.at,
+      text: `${item.by} unlocked ${monthLabel(item.month)} for ${hoursPeople.find((person) => person.id === item.person)?.name} until ${shortDate(item.until)}: “${item.reason}”`,
+    })),
+  ].sort((a, b) => b.at.localeCompare(a.at));
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 4500);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    if (!modal) return;
+    const close = (event: KeyboardEvent) => event.key === "Escape" && setModal(null);
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [modal]);
+
+  function switchKind(kind: "month" | "week") {
+    if (kind === period.kind) return;
+    // Weeks open on the last full week ("who didn't log 40 h last week"); months on the running month.
+    const next = hoursPeriods.filter((item) => item.kind === kind);
+    const pick = kind === "week" ? next.filter((item) => item.end < TODAY).pop() : next.find((item) => item.start <= TODAY && item.end >= TODAY);
+    setPeriodKey((pick ?? next[next.length - 1]).key);
+  }
+
+  function lockMonth() {
+    if (!month) return;
+    setLocks({ ...locks, [month]: { at: TODAY, by: "Finance" } });
+    setModal(null);
+    setToast(`${period.label} is locked. Anyone who still needs to add time asks finance to unlock it.`);
+  }
+
+  function openUnlock(person = "") {
+    setUnlockForm({ person, until: addDays(TODAY, 3), reason: "", error: "" });
+    setModal("unlock");
+  }
+
+  function saveUnlock() {
+    if (!month) return;
+    if (!unlockForm.person) return setUnlockForm({ ...unlockForm, error: "Choose who the period is unlocked for." });
+    if (unlockForm.reason.trim().length < 5) return setUnlockForm({ ...unlockForm, error: "Write why it's unlocked. The reason is saved in the lock log." });
+    if (unlockForm.until < TODAY) return setUnlockForm({ ...unlockForm, error: "The unlock must last until today or later." });
+    setUnlocks([{ person: unlockForm.person, month, until: unlockForm.until, reason: unlockForm.reason.trim(), at: TODAY, by: "Finance" }, ...unlocks]);
+    setModal(null);
+    setToast(`${period.label} is unlocked for ${hoursPeople.find((person) => person.id === unlockForm.person)?.name} until ${shortDate(unlockForm.until)}.`);
+  }
+
+  function exportCsv() {
+    const header = ["Person", "Role", "Unit", "Project manager", "Expected h", "Reported h", "Missing h", "Client h", "Internal h", "Absence h", "Approved h", "Waiting h", "Draft h", "Added after lock h", "Last time"];
+    const lines = rows.map(({ person, stats }) =>
+      [person.name, person.role, person.unit, person.pm, stats.expected, stats.reported, stats.missing, stats.client, stats.internal, stats.absence, stats.approved, stats.waiting, stats.draft, stats.afterLock, stats.last]
+        .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+        .join(","),
+    );
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" }));
+    link.download = `hours-${period.key}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  const pct = expected ? Math.round((reported / expected) * 100) : 0;
+  const scale = Math.max(...rows.map((row) => Math.max(row.stats.expected, row.stats.reported)), 1);
+
+  return (
+    <>
+      <section className="tw-head ho-head">
+        <div className="week-nav">
+          <Button aria-label="Previous period" className="icon-button small" disabled={position <= 0} onClick={() => setPeriodKey(sameKind[position - 1].key)}><Icon name="arrow" size={15} /></Button>
+          <div>
+            <Heading level={2}>{period.label}</Heading>
+            <p>
+              {month ? (
+                lock ? <Badge tone="slate">Locked {shortDate(lock.at)}</Badge> : <Badge tone="sand">Open · deadline {shortDate(deadlineOf(month))}</Badge>
+              ) : (
+                <Badge tone="slate">Week view · locks are set per month</Badge>
+              )}
+              {current && <span className="ho-sofar">Counts up to {fmtDay(cutoff)}{period.kind === "month" ? ", the last full week" : ", this week so far"}</span>}
+            </p>
+          </div>
+          <Button aria-label="Next period" className="icon-button small" disabled={position >= sameKind.length - 1} onClick={() => setPeriodKey(sameKind[position + 1].key)}><Icon name="arrow" size={15} /></Button>
+        </div>
+        <div className="tw-segment ho-kind" role="radiogroup">
+          {(["month", "week"] as const).map((kind) => (
+            <button aria-checked={period.kind === kind} className={period.kind === kind ? "is-active" : ""} key={kind} onClick={() => switchKind(kind)} role="radio" type="button">
+              {kind === "month" ? "Month" : "Week"}
+            </button>
+          ))}
+        </div>
+        <div className="tw-actions">
+          <Button className="secondary-button" onClick={exportCsv}>Export CSV</Button>
+          {month && lock && <Button className="secondary-button" onClick={() => openUnlock()}>Unlock for a person</Button>}
+          {month && !lock && <Button className="primary-button compact" onClick={() => setModal("lock")}>Lock {period.label.split(" ")[0]}</Button>}
+        </div>
+      </section>
+
+      <section className="ho-tiles">
+        <article className="ho-tile">
+          <span>Reported</span>
+          <strong>{pct}%</strong>
+          <small>{fmtHours(reported)} of {fmtHours(expected)} h expected</small>
+          <div className="progress"><span style={{ width: `${Math.min(100, pct)}%` }} /></div>
+        </article>
+        <article className="ho-tile">
+          <span>Complete</span>
+          <strong>{complete} of {rows.length}</strong>
+          <small>people with all expected hours</small>
+        </article>
+        <article className={`ho-tile ${missing ? "is-alert" : ""}`}>
+          <span>Missing</span>
+          <strong>{fmtHours(missing)} h</strong>
+          <small>{plural(missingPeople.length, "person", "people")} below expected</small>
+        </article>
+        <article className="ho-tile">
+          <span>Not approved yet</span>
+          <strong>{fmtHours(waiting + draft)} h</strong>
+          <small>{fmtHours(waiting)} h waiting for a PM · {fmtHours(draft)} h in draft</small>
+        </article>
+        {month && lock && (
+          <article className={`ho-tile ${afterLock ? "is-alert" : ""}`}>
+            <span>Added after lock</span>
+            <strong>{fmtHours(afterLock)} h</strong>
+            <small>needs a new invoice run</small>
+          </article>
+        )}
+      </section>
+
+      <section className="panel table-panel">
+        <div className="panel-heading">
+          <div>
+            <Heading level={2}>People</Heading>
+            <p>Expected = the person's working days × hours per day. Vacation and absence count as reported. Most missing first.</p>
+          </div>
+          <label className="search-field">
+            <Icon name="search" size={15} />
+            <TextInput aria-label="Search people" onChange={(event) => setQuery(event.target.value)} placeholder="Search person or PM" value={query} />
+          </label>
+        </div>
+        <div className="ho-filters">
+          {filters.map((item) => (
+            <button aria-pressed={filter === item.key} className={`ho-chip ${filter === item.key ? "is-active" : ""}`} key={item.key} onClick={() => setFilter(item.key)} type="button">
+              {item.label} <b>{rows.filter(tests[item.key]).length}</b>
+            </button>
+          ))}
+          {missingPeople.length > 0 && (
+            <Button className="text-button ho-remind-all" onClick={() => setToast(`Reminder sent to ${plural(missingPeople.length, "person", "people")} with missing hours.`)}>
+              Remind everyone missing hours
+            </Button>
+          )}
+        </div>
+        <div className="table-scroll">
+          <table className="ho-table">
+            <thead>
+              <tr>
+                <th>Person</th>
+                <th>Days</th>
+                <th className="r">Expected</th>
+                <th>Reported</th>
+                <th className="r">Missing</th>
+                <th>Approval</th>
+                <th>Last time</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {!visible.length && <tr><td className="tw-empty" colSpan={8}>Nobody matches this filter.</td></tr>}
+              {visible.map(({ person, stats, unlock }) => (
+                <tr key={person.id}>
+                  <td>
+                    <span className="company-cell">
+                      <span className="avatar avatar--small">{initialsOf(person.name)}</span>
+                      <span className="case-cell">
+                        <strong>{person.name}</strong>
+                        <small>{person.role} · {person.unit} · PM {person.pm}</small>
+                      </span>
+                    </span>
+                  </td>
+                  <td>
+                    <div className="ho-days">
+                      {stats.days.map((day) => (
+                        <i className={`ho-day ho-day--${day.state}`} key={day.date} title={`${fmtDay(day.date)}: ${day.state === "off" ? "not a working day" : day.state === "future" ? `not counted yet${day.hours ? ` (${fmtHours(day.hours)} h so far)` : ""}` : day.state === "absence" ? "vacation or absence" : `${fmtHours(day.hours)} h`}`} />
+                      ))}
+                    </div>
+                    {stats.gap >= 3 && <small className="ho-hint">{stats.gap} working days in a row with no time. Vacation not logged?</small>}
+                    {!stats.reported && stats.expected > 0 && <small className="ho-hint">Nothing reported for this period yet</small>}
+                  </td>
+                  <td className="r">
+                    {fmtHours(stats.expected)}
+                    {person.days.length * person.perDay < 40 && <small className="ho-sub">{Math.round((person.days.length * person.perDay) / 0.4)}% time</small>}
+                  </td>
+                  <td>
+                    <div className="ho-bar" title={`Client ${fmtHours(stats.client)} h · Internal ${fmtHours(stats.internal)} h · Absence ${fmtHours(stats.absence)} h`}>
+                      <span className="ho-bar--client" style={{ width: `${(stats.client / scale) * 100}%` }} />
+                      <span className="ho-bar--internal" style={{ width: `${(stats.internal / scale) * 100}%` }} />
+                      <span className="ho-bar--absence" style={{ width: `${(stats.absence / scale) * 100}%` }} />
+                      <i style={{ left: `${(stats.expected / scale) * 100}%` }} />
+                    </div>
+                    <small className="ho-sub">{fmtHours(stats.reported)} h{stats.internal ? ` · ${fmtHours(stats.internal)} internal` : ""}{stats.absence ? ` · ${fmtHours(stats.absence)} away` : ""}</small>
+                  </td>
+                  <td className={`r ho-missing ${stats.missing ? "is-short" : ""}`}>{stats.missing ? fmtHours(stats.missing) : "✓"}</td>
+                  <td>
+                    <div className="ho-badges">
+                      {stats.waiting > 0 && <Badge tone="blue">{fmtHours(stats.waiting)} h waiting</Badge>}
+                      {stats.draft > 0 && <Badge tone="amber">{fmtHours(stats.draft)} h draft</Badge>}
+                      {stats.afterLock > 0 && <Badge tone="red">{fmtHours(stats.afterLock)} h after lock</Badge>}
+                      {unlock && <Badge tone="violet">Unlocked to {shortDate(unlock.until)}</Badge>}
+                      {!stats.waiting && !stats.draft && !stats.afterLock && !unlock && stats.reported > 0 && <span className="ho-ok">Approved</span>}
+                    </div>
+                  </td>
+                  <td className={stats.idle > 5 ? "ho-idle" : ""}>{stats.last ? shortDate(stats.last) : "–"}{stats.idle > 5 && <small className="ho-sub">{stats.idle} working days ago</small>}</td>
+                  <td className="ho-actions">
+                    {(stats.missing > 0 || stats.draft > 0) && <Button className="text-button" onClick={() => setToast(`Reminder sent to ${person.name}.`)}>Remind</Button>}
+                    {month && lock && !unlock && <Button className="text-button" onClick={() => openUnlock(person.id)}>Unlock</Button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="ho-legend">
+          <span><i className="ho-day ho-day--full" />Full day</span>
+          <span><i className="ho-day ho-day--partial" />Part of the day</span>
+          <span><i className="ho-day ho-day--none" />No time</span>
+          <span><i className="ho-day ho-day--absence" />Vacation or absence</span>
+          <span><i className="ho-day ho-day--off" />Not a working day</span>
+          <span><i className="ho-day ho-day--future" />Not counted yet</span>
+          <span><i className="ho-bar-key ho-bar--client" />Client</span>
+          <span><i className="ho-bar-key ho-bar--internal" />Internal</span>
+          <span><i className="ho-bar-key ho-bar--absence" />Absence</span>
+        </div>
+      </section>
+
+      <section className="two-col ho-bottom">
+        <article className="panel list-panel ho-panel">
+          <div className="panel-heading">
+            <div><Heading level={2}>Waiting for approval</Heading><p>Submitted hours in this period, per project manager</p></div>
+          </div>
+          {byPm.length ? (
+            byPm.map(([pm, group]) => (
+              <div className="ho-pm" key={pm}>
+                <span className="avatar avatar--small">{initialsOf(pm)}</span>
+                <span className="case-cell"><strong>{pm}</strong><small>{plural(group.people, "person", "people")} · oldest {fmtDay(group.oldest)}</small></span>
+                <strong className="ho-pm-hours">{fmtHours(group.hours)} h</strong>
+                <Button className="text-button" onClick={() => setToast(`Asked ${pm} to approve ${fmtHours(group.hours)} h.`)}>Nudge</Button>
+              </div>
+            ))
+          ) : (
+            <p className="tw-hint">Nothing is waiting for approval in this period.</p>
+          )}
+        </article>
+        <article className="panel list-panel ho-panel">
+          <div className="panel-heading">
+            <div><Heading level={2}>Lock log</Heading><p>Every lock and unlock, with who and why</p></div>
+          </div>
+          {log.map((item) => (
+            <div className="ho-log" key={`${item.at}${item.text}`}>
+              <small>{fmtDay(item.at)}</small>
+              <span>{item.text}</span>
+            </div>
+          ))}
+        </article>
+      </section>
+
+      {modal && (
+        <div className="modal-backdrop tw-sheet" onClick={() => setModal(null)}>
+          <div aria-modal="true" className="modal-card" onClick={(event) => event.stopPropagation()} role="dialog">
+            {modal === "lock" ? (
+              <>
+                <div className="panel-heading">
+                  <div><Heading level={2}>Lock {period.label}</Heading><p>Nobody can add or change time in a locked month without an unlock.</p></div>
+                  <Button aria-label="Close" className="icon-button small" onClick={() => setModal(null)}><Icon name="close" size={15} /></Button>
+                </div>
+                {month && TODAY <= deadlineOf(month) && <p className="tw-msg tw-msg--warn">The deadline is {fmtDay(deadlineOf(month))}. Locking now also stops people who are on time.</p>}
+                {missingPeople.length > 0 && (
+                  <p className="tw-msg tw-msg--error">
+                    {plural(missingPeople.length, "person is", "people are")} still missing {fmtHours(missing)} h: {missingPeople.slice(0, 4).map((row) => row.person.name).join(", ")}
+                    {missingPeople.length > 4 ? ` and ${missingPeople.length - 4} more` : ""}.
+                  </p>
+                )}
+                {waiting + draft > 0 && <p className="tw-msg tw-msg--info">{fmtHours(waiting + draft)} h are not approved yet. Locking stops new time; approval can still go on.</p>}
+                <Button className="primary-button compact full tw-confirm" onClick={lockMonth}>Lock {period.label}</Button>
+              </>
+            ) : (
+              <>
+                <div className="panel-heading">
+                  <div><Heading level={2}>Unlock {period.label}</Heading><p>For one person, for a few days. The reason is saved in the lock log.</p></div>
+                  <Button aria-label="Close" className="icon-button small" onClick={() => setModal(null)}><Icon name="close" size={15} /></Button>
+                </div>
+                <div className="form-grid">
+                  <label className="field field--wide">
+                    <span>Person</span>
+                    <select onChange={(event) => setUnlockForm({ ...unlockForm, person: event.target.value, error: "" })} value={unlockForm.person}>
+                      <option value="">Choose a person</option>
+                      {hoursPeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Unlocked until</span>
+                    <TextInput min={TODAY} onChange={(event) => setUnlockForm({ ...unlockForm, until: event.target.value, error: "" })} type="date" value={unlockForm.until} />
+                  </label>
+                  <label className="field field--wide">
+                    <span>Reason</span>
+                    <TextInput maxLength={300} onChange={(event) => setUnlockForm({ ...unlockForm, reason: event.target.value, error: "" })} placeholder="e.g. Forgot the workshop on 28 Sep" value={unlockForm.reason} />
+                  </label>
+                </div>
+                {unlockForm.error && <p className="form-message form-message--error" role="alert">{unlockForm.error}</p>}
+                <Button className="primary-button compact full" onClick={saveUnlock}>Unlock</Button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {toast && <div className="tw-toast" role="status">{toast}</div>}
+    </>
+  );
+}
+
 function WeeklySummary() {
   const rows = [
     { project: "Nova implementation", account: "Nordic Solutions", hours: [4.5, 0, 3, 0, 0], billable: true },
@@ -2551,6 +3109,7 @@ export default function App() {
   else if (page === "time") content = <TimeEntries />;
   else if (page === "weekly") content = <WeeklySummary />;
   else if (page === "approvals") content = <Approvals />;
+  else if (page === "hours") content = <HoursOverview />;
   else if (page === "accounts") content = <Accounts deals={deals} onOpenDeal={openDeal} />;
   else if (page === "contacts") content = <Contacts />;
   else if (page === "leads") content = <Leads />;
