@@ -27,7 +27,7 @@ type IconName =
 type Page =
   | "dashboard"
   | "time"
-  | "weekly"
+  | "summary"
   | "approvals"
   | "hours"
   | "sales"
@@ -140,7 +140,7 @@ function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
 const pageMeta: Record<Page, { title: string; eyebrow: string }> = {
   dashboard: { title: "Dashboard", eyebrow: "Good morning, Philip" },
   time: { title: "Time entries", eyebrow: "My work" },
-  weekly: { title: "Weekly time summary", eyebrow: "My work" },
+  summary: { title: "Time summary", eyebrow: "My work · your own time" },
   approvals: { title: "Approvals", eyebrow: "Team" },
   hours: { title: "Hours overview", eyebrow: "Finance · who has reported their time" },
   sales: { title: "Pipeline", eyebrow: "Opportunities · MEDDPICC qualification" },
@@ -163,7 +163,7 @@ const navGroups: { label: string; items: { id: Page; label: string; icon?: IconN
       { id: "dashboard", label: "Dashboard", icon: "dashboard" },
       { id: "activities", label: "Activities", icon: "calendar" },
       { id: "time", label: "Time entries", icon: "clock" },
-      { id: "weekly", label: "Weekly time summary" },
+      { id: "summary", label: "Time summary" },
       { id: "approvals", label: "Approvals" },
     ],
   },
@@ -996,13 +996,22 @@ type TimeEntry = {
   preApprovedBy?: string;
 };
 type TimeRow = { key: string; project: string | null; type: TimeTypeCode; assigned?: boolean; preApprovedBy?: string };
-type TimeModal = "copy" | "absence" | "submit" | "addRow" | "request" | "overtime" | "actions" | null;
+type TimeModal = "copy" | "absence" | "submit" | "addRow" | "request" | "overtime" | "change" | "actions" | null;
+type ChangeRequest = { month: string; reason: string; at: string };
+// The consultant's time lives in the app, so Time entries and Time summary show the same entries.
+type TimeData = {
+  entries: TimeEntry[];
+  setEntries: (entries: TimeEntry[]) => void;
+  weekStart: string;
+  setWeekStart: (monday: string) => void;
+  requests: ChangeRequest[];
+  onRequest: (request: ChangeRequest) => void;
+};
 type TimeSheet = { row: TimeRow; date: string; hours: string; comment: string; customerText: string; task: string; outsideHours: boolean; error: string };
 type TimePopover = { row: string; date: string; left: number; top?: number; bottom?: number };
 
 const TODAY = "2026-10-29";
 const standardDay = 8 * 60;
-const standardWeek = 5 * standardDay;
 const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -1058,7 +1067,10 @@ const seed = (date: string, project: string | null, type: TimeTypeCode, hours: n
 });
 
 const initialTimeEntries: TimeEntry[] = [
-  // Week 42: approved
+  // Weeks 40–42: approved (week 40 spans the locked September and October)
+  ...["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09"].map((date) =>
+    seed(date, "nova", "client_work", 8, "approved"),
+  ),
   ...["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16"].map((date) => seed(date, "nova", "client_work", 8, "approved")),
   // Week 43: Monday off, Wednesday rejected by the PM, Saturday overtime for a go-live, the rest waiting for approval
   seed("2026-10-19", null, "vacation", 8, "approved"),
@@ -1120,6 +1132,31 @@ const shortDate = (iso: string) => `${toDate(iso).getUTCDate()} ${monthNames[toD
 const fmtDay = (iso: string) => `${dayNames[dayIndex(iso)].slice(0, 3)} ${shortDate(iso)}`;
 const fmtLongDay = (iso: string) => `${dayNames[dayIndex(iso)]} ${shortDate(iso)}`;
 
+// Swedish public holidays on weekdays, plus the eves that are days off (Dynamics' hour summaries use a list like this).
+// Other countries need their own list before go-live (ADR-004).
+const holidays = new Set([
+  "2025-12-24", "2025-12-25", "2025-12-26", "2025-12-31",
+  "2026-01-01", "2026-01-06", "2026-04-03", "2026-04-06", "2026-05-01", "2026-05-14", "2026-06-19", "2026-12-24", "2026-12-25", "2026-12-31",
+  "2027-01-01", "2027-01-06",
+]);
+const isHoliday = (date: string) => holidays.has(date);
+// The signed-in consultant's working pattern. A part-timer has fewer days, or fewer minutes a day, and is never nudged for the rest.
+const workPattern = { days: [0, 1, 2, 3, 4], minutesPerDay: 8 * 60 };
+const expectedOn = (date: string) => (workPattern.days.includes(dayIndex(date)) && !isHoliday(date) ? workPattern.minutesPerDay : 0);
+const longMonths = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const monthOf = (date: string) => date.slice(0, 7);
+const monthTitle = (month: string) => `${longMonths[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`;
+const monthName = (month: string) => longMonths[Number(month.slice(5, 7)) - 1];
+const nextMonth = (month: string) => monthOf(addDays(`${month}-28`, 7));
+// Month close: hours are due by the 2nd of the next month (ADR-004), so the month locks automatically when that day ends,
+// or when the next working day ends if the 2nd is a weekend or a public holiday. Changes after that go through Finance.
+function monthDeadline(month: string) {
+  let date = `${nextMonth(month)}-02`;
+  while (isWeekend(date) || isHoliday(date)) date = addDays(date, 1);
+  return date;
+}
+const isMonthLocked = (month: string) => TODAY > monthDeadline(month);
+
 function omit<T>(record: Record<string, T>, key: string) {
   const next = { ...record };
   delete next[key];
@@ -1141,6 +1178,7 @@ function parseHours(text: string): { minutes: number } | { error: string } {
 function cellLock(entry: TimeEntry | undefined, type: TimeTypeCode, date: string) {
   if (entry?.status === "submitted") return "Submitted, waiting for approval";
   if (entry?.status === "approved") return "Approved and locked";
+  if (isMonthLocked(monthOf(date))) return `${monthName(monthOf(date))} is locked`;
   if (!entry && date > TODAY && !typeOf(type).futureOk) return `${typeOf(type).name} can't be logged ahead of the day`;
   return "";
 }
@@ -1199,10 +1237,8 @@ function useNarrow(query = "(max-width: 767px)") {
   return narrow;
 }
 
-function TimeEntries() {
+function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, onRequest }: TimeData) {
   const narrow = useNarrow();
-  const [entries, setEntries] = useState(initialTimeEntries);
-  const [weekStart, setWeekStart] = useState(mondayOf(TODAY));
   const [addedRows, setAddedRows] = useState<Record<string, TimeRow[]>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -1217,6 +1253,7 @@ function TimeEntries() {
   const [absence, setAbsence] = useState({ type: "vacation" as TimeTypeCode, from: TODAY, to: TODAY, hours: "8", error: "" });
   const [request, setRequest] = useState({ query: "", project: "" });
   const [overtime, setOvertime] = useState({ project: "", approver: "", ordered: false });
+  const [change, setChange] = useState({ month: "", reason: "", error: "" });
   const [mobileDay, setMobileDay] = useState(TODAY);
   const tableRef = useRef<HTMLTableElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -1226,7 +1263,12 @@ function TimeEntries() {
   const rows = rowsForWeek(weekStart, inWeek, addedRows[weekStart] ?? []);
   const total = sumMinutes(inWeek);
   const status = weekStatus(inWeek);
-  const toSubmit = inWeek.filter((entry) => entry.status === "draft" || entry.status === "rejected");
+  // Drafts in a locked month stay as they are; Finance sees them, nobody submits them late by accident.
+  const toSubmit = inWeek.filter((entry) => (entry.status === "draft" || entry.status === "rejected") && !isMonthLocked(monthOf(entry.date)));
+  const weekExpected = dates.reduce((sum, date) => sum + expectedOn(date), 0);
+  const lockedMonths = [...new Set(dates.map(monthOf))].filter(isMonthLocked);
+  const openMonth = [...new Set(dates.map(monthOf))].find((month) => !isMonthLocked(month));
+  const closesSoon = openMonth && monthDeadline(openMonth) <= addDays(TODAY, 7) ? ` ${monthName(openMonth)} closes ${fmtDay(monthDeadline(openMonth))}.` : "";
   const canRecall = inWeek.some((entry) => entry.status === "submitted");
   const weekLabel = `Week ${isoWeek(weekStart)}`;
   const rangeLabel = `${shortDate(dates[0])} – ${shortDate(dates[6])}`;
@@ -1380,7 +1422,7 @@ function TimeEntries() {
     let next = entries;
     let filled = 0;
     for (const date of days) {
-      const left = standardDay - sumMinutes(next.filter((entry) => entry.date === date));
+      const left = expectedOn(date) - sumMinutes(next.filter((entry) => entry.date === date));
       if (left <= 0) continue;
       const existing = next.find((entry) => entry.date === date && rowKey(entry.project, entry.type) === row.key);
       if (existing && !isEditable(existing)) continue;
@@ -1429,7 +1471,7 @@ function TimeEntries() {
     const parts = [`Copied ${plural(rowCount, "row", "rows")} from week ${isoWeek(lastStart)}${copyHours ? ` with ${plural(created, "entry", "entries")}` : ""}.`];
     if (copyable.length < last.length) parts.push("Vacation, absence and overtime aren't copied.");
     if (kept) parts.push(`${plural(kept, "cell you'd filled was", "cells you'd filled were")} kept.`);
-    if (ahead) parts.push(`${plural(ahead, "day is", "days are")} ahead of today and left empty.`);
+    if (ahead) parts.push(`${plural(ahead, "day was", "days were")} left empty (ahead of today or in a locked month).`);
     setToast(parts.join(" "));
   }
 
@@ -1442,7 +1484,8 @@ function TimeEntries() {
   function absenceDays() {
     const days: string[] = [];
     if (!absence.from || !absence.to || absence.from > absence.to) return days;
-    for (let date = absence.from, guard = 0; date <= absence.to && guard < 400; date = addDays(date, 1), guard++) if (!isWeekend(date)) days.push(date);
+    for (let date = absence.from, guard = 0; date <= absence.to && guard < 400; date = addDays(date, 1), guard++)
+      if (!isWeekend(date) && !isHoliday(date) && !isMonthLocked(monthOf(date))) days.push(date);
     return days;
   }
 
@@ -1451,7 +1494,7 @@ function TimeEntries() {
     const days = absenceDays();
     if (!absence.from || !absence.to || absence.from > absence.to) return setAbsence({ ...absence, error: "Pick a from date on or before the to date." });
     if ("error" in parsed || !parsed.minutes) return setAbsence({ ...absence, error: "error" in parsed ? parsed.error : "Enter the hours per day, e.g. 8, or 4 for half a day." });
-    if (!days.length) return setAbsence({ ...absence, error: "Those dates are all on a weekend." });
+    if (!days.length) return setAbsence({ ...absence, error: "Those dates are weekends, public holidays or in a locked month." });
     let next = entries;
     let created = 0;
     for (const date of days) {
@@ -1467,6 +1510,18 @@ function TimeEntries() {
       `Added ${plural(created, "day", "days")} of ${typeOf(absence.type).name.toLowerCase()} (${fmtH(created * parsed.minutes)} h) as Draft${weeks > 1 ? ` across ${weeks} weeks` : ""}.` +
         (created < days.length ? " Days that already had it were kept." : ""),
     );
+  }
+
+  function openChange(month: string) {
+    setChange({ month, reason: "", error: "" });
+    setModal("change");
+  }
+
+  function sendChange() {
+    if (change.reason.trim().length < 5) return setChange({ ...change, error: "Write what you need to change and why. Finance reads it before opening the month." });
+    onRequest({ month: change.month, reason: change.reason.trim(), at: TODAY });
+    setModal(null);
+    setToast(`Finance has your request. You'll hear when ${monthName(change.month)} is open for you.`);
   }
 
   function submitWeek() {
@@ -1565,7 +1620,7 @@ function TimeEntries() {
   ];
   const warnings = [
     ...dates.filter((date) => dayMinutes(date) > 10 * 60 && dayMinutes(date) <= 24 * 60).map((date) => `${fmtDay(date)} has ${fmtH(dayMinutes(date))} h, more than 10 h.`),
-    ...(total < standardWeek ? [`${fmtH(total)} h is below the 40 h standard week.`] : []),
+    ...(total < weekExpected ? [`${fmtH(total)} h is below the ${fmtH(weekExpected)} h expected this week.`] : []),
   ];
 
   // One nudge at a time, in this order: a rejection, missing details, open days to fill, ready to submit, up to date, done.
@@ -1575,9 +1630,18 @@ function TimeEntries() {
     .filter((row) => projectOf(row.project)?.kind === "client" && row.type !== "overtime")
     .map((row) => ({ row, minutes: sumMinutes(entries.filter((entry) => rowKey(entry.project, entry.type) === row.key && entry.date >= since)) }))
     .sort((a, b) => b.minutes - a.minutes)[0]?.row;
-  const openDays = dates.filter((date) => !isWeekend(date) && date <= TODAY && dayMinutes(date) < standardDay && !inWeek.some((entry) => entry.date === date && !isEditable(entry)));
+  const openDays = dates.filter(
+    (date) => expectedOn(date) > 0 && date <= TODAY && dayMinutes(date) < expectedOn(date) && !isMonthLocked(monthOf(date)) && !inWeek.some((entry) => entry.date === date && !isEditable(entry)),
+  );
   const weekOver = addDays(weekStart, 4) <= TODAY;
   const banner: { tone: string; text: string; action?: string; run?: () => void; dismiss?: boolean } | null = (() => {
+    if (dates.every((date) => isMonthLocked(monthOf(date)))) {
+      const month = lockedMonths[lockedMonths.length - 1];
+      const asked = requests.some((item) => item.month === month);
+      return asked
+        ? { tone: "slate", text: `${monthName(month)} is locked. Finance has your request to change it.` }
+        : { tone: "slate", text: `${monthName(month)} is locked. Need to change something? Finance can open it for you.`, action: "Request a change", run: () => openChange(month) };
+    }
     if (rejected) {
       const who = projectOf(rejected.project)?.pm ?? "Your PM";
       return { tone: "red", text: `${who} sent back ${fmtDay(rejected.date)}: “${rejected.pmComment ?? "see the comment"}”`, action: "Fix it", run: () => fixEntry(rejected) };
@@ -1588,11 +1652,11 @@ function TimeEntries() {
     }
     if (openDays.length && usualRow && !dismissed[weekStart]) {
       const when = openDays.length === 1 ? dayNames[dayIndex(openDays[0])] : `${openDays.length} days`;
-      return { tone: "sand", text: `Your usual day is 8 h on ${rowName(usualRow)}.`, action: `Fill ${when}`, run: () => fillDays(usualRow, openDays), dismiss: true };
+      return { tone: "sand", text: `Your usual day is ${fmtH(workPattern.minutesPerDay)} h on ${rowName(usualRow)}.${closesSoon}`, action: `Fill ${when}`, run: () => fillDays(usualRow, openDays), dismiss: true };
     }
     if (!openDays.length && toSubmit.length && weekOver)
-      return { tone: "sand", text: "Your week is complete. Submitting it lets your project managers approve it, so invoicing goes out on time.", action: "Submit week", run: () => setModal("submit") };
-    if (!openDays.length && toSubmit.length) return { tone: "green", text: "You're up to date. The rest of the week is still open." };
+      return { tone: "sand", text: `Your week is complete. Submitting it lets your project managers approve it, so invoicing goes out on time.${closesSoon}`, action: "Submit week", run: () => setModal("submit") };
+    if (!openDays.length && toSubmit.length) return { tone: "green", text: `You're up to date. The rest of the week is still open.${closesSoon}` };
     if (inWeek.length && !toSubmit.length)
       return { tone: "green", text: inWeek.every((entry) => entry.status === "approved") ? "Approved. Nothing left to do this week." : "Submitted. Your project managers approve it next." };
     if (usualRow && openDays.length) return null;
@@ -1657,6 +1721,18 @@ function TimeEntries() {
         </>
       );
     }
+    if (modal === "change")
+      return (
+        <>
+          {modalHead(`Request a change to ${monthName(change.month)}`, "The month is locked. Finance opens it for you for a few days if they agree.")}
+          <label className="field tw-search">
+            <span>What do you need to change, and why?</span>
+            <TextInput autoFocus maxLength={300} onChange={(event) => setChange({ ...change, reason: event.target.value, error: "" })} placeholder="e.g. Forgot 4 h on CRM migration on 28 Sep" value={change.reason} />
+          </label>
+          {change.error && <p className="form-message form-message--error" role="alert">{change.error}</p>}
+          <Button className="primary-button compact full tw-confirm" onClick={sendChange}>Send to Finance</Button>
+        </>
+      );
     if (modal === "request") {
       const picked = projectOf(request.project);
       return (
@@ -1892,7 +1968,7 @@ function TimeEntries() {
     const entry = entryAt(current.row, current.date);
     const lock = cellLock(entry, current.row.type, current.date);
     const project = projectOf(current.row.project);
-    const left = standardDay - (dayMinutes(current.date) - (entry?.minutes ?? 0));
+    const left = expectedOn(current.date) - (dayMinutes(current.date) - (entry?.minutes ?? 0));
     const chips = [8 * 60, 4 * 60, ...(left > 0 && left !== 8 * 60 && left !== 4 * 60 ? [left] : [])];
     return (
       <>
@@ -1985,7 +2061,7 @@ function TimeEntries() {
             <div><strong className="tw-display">{weekLabel}</strong><small>{rangeLabel}</small></div>
             <Button aria-label="Next week" className="icon-button small" onClick={() => goWeek(1)}><Icon name="arrow" size={15} /></Button>
           </div>
-          <div className="td-sum"><Badge tone={status.tone}>{status.label}</Badge><span>{fmtH(total)} / 40 h</span></div>
+          <div className="td-sum"><Badge tone={status.tone}>{status.label}</Badge><span>{fmtH(total)} / {fmtH(weekExpected)} h</span></div>
         </section>
         {nudge}
         <div className="td-days">
@@ -2052,6 +2128,12 @@ function TimeEntries() {
               <p className="tw-subtle">
                 {rangeLabel}
                 <span className={`tw-state tw-state--${status.tone}`}>{status.label}</span>
+                {lockedMonths.map((month) => (
+                  <span className="tw-locked" key={month}>
+                    {monthName(month)} locked
+                    {requests.some((item) => item.month === month) ? " · change requested" : <Button className="tw-link" onClick={() => openChange(month)}>Request a change</Button>}
+                  </span>
+                ))}
                 {saved && <span className="tw-saved">Saved</span>}
                 {weekStart !== mondayOf(TODAY) && <Button className="tw-link" onClick={goToday}>Back to this week</Button>}
               </p>
@@ -2059,10 +2141,10 @@ function TimeEntries() {
           </div>
           <div className="tw-figure">
             <strong className="tw-display">{fmtH(total)}<small>h</small></strong>
-            <span className="tw-subtle">of 40</span>
+            <span className="tw-subtle">of {fmtH(weekExpected)}</span>
           </div>
         </div>
-        <div className="tw-line"><span style={{ width: `${Math.min(100, (total / standardWeek) * 100)}%` }} /></div>
+        <div className="tw-line"><span style={{ width: `${weekExpected ? Math.min(100, (total / weekExpected) * 100) : 0}%` }} /></div>
         {nudge}
       </section>
 
@@ -2073,9 +2155,9 @@ function TimeEntries() {
               <tr>
                 <th>Project</th>
                 {dates.map((date) => (
-                  <th className={[isWeekend(date) && "is-weekend", date === TODAY && "is-today"].filter(Boolean).join(" ")} key={date}>
+                  <th className={[(isWeekend(date) || isHoliday(date)) && "is-weekend", date === TODAY && "is-today", isMonthLocked(monthOf(date)) && "is-locked"].filter(Boolean).join(" ")} key={date}>
                     <span>{dayNames[dayIndex(date)].slice(0, 3)}</span>
-                    <small>{shortDate(date)}</small>
+                    <small>{isHoliday(date) ? "Holiday" : shortDate(date)}</small>
                   </th>
                 ))}
                 <th>Total</th>
@@ -2243,7 +2325,6 @@ const hoursPeople: HoursPerson[] = [
 ];
 
 const inRanges = (date: string, ranges: [string, string][] = []) => ranges.some(([from, to]) => date >= from && date <= to);
-const monthOf = (date: string) => date.slice(0, 7);
 const fmtHours = (hours: number) => String(Math.round(hours * 10) / 10);
 
 function buildHours() {
@@ -2288,7 +2369,6 @@ const initialUnlocks: Unlock[] = [
   { person: "as", month: "2026-09", until: "2026-10-15", reason: "Week 38 was in a draft that was never saved.", at: "2026-10-14", by: "Finance" },
 ];
 
-const deadlineOf = (month: string) => `${monthOf(addDays(`${month}-28`, 7))}-02`;
 const monthLabel = (month: string) => hoursPeriods.find((period) => period.key === month)?.label ?? month;
 
 function workdaysBetween(from: string, to: string) {
@@ -2352,7 +2432,7 @@ function HoursOverview() {
   const [periodKey, setPeriodKey] = useState("2026-10");
   const [filter, setFilter] = useState<HoursFilter>("all");
   const [query, setQuery] = useState("");
-  const [locks, setLocks] = useState<Record<string, MonthLock>>({ "2026-09": { at: "2026-10-03", by: "Finance" } });
+  const [locks, setLocks] = useState<Record<string, MonthLock>>({ "2026-09": { at: addDays(monthDeadline("2026-09"), 1), by: "Automatic" } });
   const [unlocks, setUnlocks] = useState(initialUnlocks);
   const [modal, setModal] = useState<"lock" | "unlock" | null>(null);
   const [unlockForm, setUnlockForm] = useState({ person: "", until: addDays(TODAY, 3), reason: "", error: "" });
@@ -2411,7 +2491,10 @@ function HoursOverview() {
   ).sort((a, b) => b[1].hours - a[1].hours);
 
   const log = [
-    ...Object.entries(locks).map(([key, item]) => ({ at: item.at, text: `${item.by} locked ${monthLabel(key)}.` })),
+    ...Object.entries(locks).map(([key, item]) => ({
+      at: item.at,
+      text: item.by === "Automatic" ? `${monthLabel(key)} locked automatically after the deadline (${fmtDay(monthDeadline(key))}).` : `${item.by} locked ${monthLabel(key)} early.`,
+    })),
     ...unlocks.map((item) => ({
       at: item.at,
       text: `${item.by} unlocked ${monthLabel(item.month)} for ${hoursPeople.find((person) => person.id === item.person)?.name} until ${shortDate(item.until)}: “${item.reason}”`,
@@ -2487,7 +2570,7 @@ function HoursOverview() {
             <h2 className="tw-display">{period.label}</h2>
             <p>
               {month ? (
-                lock ? <Badge tone="slate">Locked {shortDate(lock.at)}</Badge> : <Badge tone="sand">Open · deadline {shortDate(deadlineOf(month))}</Badge>
+                lock ? <Badge tone="slate">Locked {shortDate(lock.at)}</Badge> : <Badge tone="sand">Open · locks automatically after {fmtDay(monthDeadline(month))}</Badge>
               ) : (
                 <Badge tone="slate">Week view · locks are set per month</Badge>
               )}
@@ -2506,7 +2589,7 @@ function HoursOverview() {
         <div className="tw-actions">
           <Button className="secondary-button" onClick={exportCsv}>Export CSV</Button>
           {month && lock && <Button className="secondary-button" onClick={() => openUnlock()}>Unlock for a person</Button>}
-          {month && !lock && <Button className="primary-button compact" onClick={() => setModal("lock")}>Lock {period.label.split(" ")[0]}</Button>}
+          {month && !lock && <Button className="secondary-button" onClick={() => setModal("lock")}>Lock now</Button>}
         </div>
       </section>
 
@@ -2686,7 +2769,7 @@ function HoursOverview() {
                   <div><Heading level={2}>Lock {period.label}</Heading><p>Nobody can add or change time in a locked month without an unlock.</p></div>
                   <Button aria-label="Close" className="icon-button small" onClick={() => setModal(null)}><Icon name="close" size={15} /></Button>
                 </div>
-                {month && TODAY <= deadlineOf(month) && <p className="tw-msg tw-msg--warn">The deadline is {fmtDay(deadlineOf(month))}. Locking now also stops people who are on time.</p>}
+                {month && TODAY <= monthDeadline(month) && <p className="tw-msg tw-msg--warn">It locks automatically after {fmtDay(monthDeadline(month))}. Locking now also stops people who are on time.</p>}
                 {missingPeople.length > 0 && (
                   <p className="tw-msg tw-msg--error">
                     {plural(missingPeople.length, "person is", "people are")} still missing {fmtHours(missing)} h: {missingPeople.slice(0, 4).map((row) => row.person.name).join(", ")}
@@ -2731,54 +2814,277 @@ function HoursOverview() {
   );
 }
 
-function WeeklySummary() {
-  const rows = [
-    { project: "Nova implementation", account: "Nordic Solutions", hours: [4.5, 0, 3, 0, 0], billable: true },
-    { project: "CRM migration", account: "TechVision AB", hours: [3.5, 6, 0, 0, 0], billable: true },
-    { project: "Digital platform 2.0", account: "Bright Digital", hours: [0, 0, 4, 8.5, 0], billable: true },
-    { project: "Internal enablement", account: "Sirocco", hours: [0, 1.5, 1, 0, 0], billable: false },
-  ];
-  const days = ["Mon 10", "Tue 11", "Wed 12", "Thu 13", "Fri 14"];
-  const dayTotals = days.map((_, index) => rows.reduce((sum, row) => sum + row.hours[index], 0));
-  const total = dayTotals.reduce((sum, value) => sum + value, 0);
-  const billable = rows.filter((row) => row.billable).reduce((sum, row) => sum + row.hours.reduce((a, b) => a + b, 0), 0);
-  const billablePct = Math.round((billable / total) * 100);
+// Time summary: the consultant's own time, read-only. Monthly answers "am I done before the month closes?";
+// weekly shows the last weeks and what a week went to. Entering time happens in Time entries.
+type DayMark = "full" | "partial" | "none" | "away" | "off" | "future" | "outside";
+
+function TimeSummary({ entries, weekStart, setWeekStart, requests, onRequest, onOpenWeek }: TimeData & { onOpenWeek: (monday: string) => void }) {
+  const [view, setView] = useState<"month" | "week">("month");
+  const [month, setMonth] = useState(monthOf(TODAY));
+  const [change, setChange] = useState({ open: false, reason: "", error: "" });
+  const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 4500);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const minutesIn = (from: string, to: string) => sumMinutes(entries.filter((entry) => entry.date >= from && entry.date <= to));
+  const minutesOn = (date: string) => minutesIn(date, date);
+  const expectedIn = (from: string, to: string) => {
+    let sum = 0;
+    for (let date = from; date <= to; date = addDays(date, 1)) sum += expectedOn(date);
+    return sum;
+  };
+  const split = (from: string, to: string) => {
+    const list = entries.filter((entry) => entry.date >= from && entry.date <= to);
+    const of = (test: (entry: TimeEntry) => boolean) => sumMinutes(list.filter(test));
+    return [
+      { label: "Client, billable", minutes: of((entry) => typeOf(entry.type).billable), tone: "client" },
+      { label: "Client, not billable", minutes: of((entry) => !typeOf(entry.type).billable && projectOf(entry.project)?.kind === "client"), tone: "support" },
+      { label: "Internal", minutes: of((entry) => projectOf(entry.project)?.kind === "internal"), tone: "internal" },
+      { label: "Time away", minutes: of((entry) => !entry.project), tone: "away" },
+    ].filter((item) => item.minutes > 0);
+  };
+
+  const first = `${month}-01`;
+  const last = addDays(`${nextMonth(month)}-01`, -1);
+  const locked = isMonthLocked(month);
+  const deadline = monthDeadline(month);
+  const asked = requests.some((item) => item.month === month);
+  const soFar = TODAY < last ? (TODAY < first ? addDays(first, -1) : TODAY) : last;
+  const monthMinutes = minutesIn(first, last);
+  const monthExpected = first > TODAY ? expectedIn(first, last) : expectedIn(first, soFar);
+  const monthWeeks: string[] = [];
+  for (let monday = mondayOf(first); monday <= last; monday = addDays(monday, 7)) monthWeeks.push(monday);
+  const openDays = monthWeeks.flatMap(weekDates).filter((date) => date >= first && date <= soFar && expectedOn(date) > 0 && minutesOn(date) < expectedOn(date));
+  const weekInfo = (monday: string) => {
+    const list = entries.filter((entry) => entry.date >= monday && entry.date <= addDays(monday, 6));
+    return { list, status: weekStatus(list), minutes: sumMinutes(list), drafts: list.some((entry) => entry.status === "draft" || entry.status === "rejected") };
+  };
+  const unsent = monthWeeks.filter((monday) => monday <= TODAY && weekInfo(monday).drafts);
+
+  const mark = (date: string): DayMark => {
+    if (date < first || date > last) return "outside";
+    const minutes = minutesOn(date);
+    if (entries.some((entry) => entry.date === date && !entry.project)) return "away";
+    if (!expectedOn(date)) return minutes ? "full" : "off";
+    if (date > TODAY) return minutes ? "partial" : "future";
+    return minutes >= expectedOn(date) ? "full" : minutes ? "partial" : "none";
+  };
+
+  // The next step for the month, the same calm sentence as in Time entries.
+  const monthNext: { tone: string; text: string; action?: string; run?: () => void } = (() => {
+    if (locked)
+      return asked
+        ? { tone: "slate", text: `${monthName(month)} closed ${fmtDay(deadline)} and is locked. Finance has your request to change it.` }
+        : { tone: "slate", text: `${monthName(month)} closed ${fmtDay(deadline)} and is locked. Need to change something? Finance can open it for you.`, action: "Request a change", run: () => setChange({ open: true, reason: "", error: "" }) };
+    if (first > TODAY) return { tone: "slate", text: `${monthName(month)} hasn't started. Plan vacation or absence in Time entries.` };
+    if (openDays.length || unsent.length) {
+      const parts = [openDays.length ? plural(openDays.length, "day is", "days are") + " still open" : "", unsent.length ? plural(unsent.length, "week isn't", "weeks aren't") + " submitted" : ""].filter(Boolean);
+      const target = openDays.length ? mondayOf(openDays[0]) : unsent[0];
+      return { tone: "amber", text: `${parts.join(" and ")}. ${monthName(month)} closes ${fmtDay(deadline)}.`, action: `Open week ${isoWeek(target)}`, run: () => onOpenWeek(target) };
+    }
+    return { tone: "green", text: `Everything is in. ${monthName(month)} closes ${fmtDay(deadline)}.` };
+  })();
+
+  const weekEnd = addDays(weekStart, 6);
+  const history = Array.from({ length: 8 }, (_, index) => addDays(weekStart, (index - 7) * 7));
+  const selected = weekInfo(weekStart);
+  const weekExpected = expectedIn(weekStart, weekEnd);
+  const byRow = Object.values(
+    selected.list.reduce<Record<string, { name: string; sub: string; minutes: number }>>((groups, entry) => {
+      const row = { key: rowKey(entry.project, entry.type), project: entry.project, type: entry.type };
+      const group = groups[row.key] ?? { name: rowName(row), sub: rowSub(row), minutes: 0 };
+      groups[row.key] = { ...group, minutes: group.minutes + entry.minutes };
+      return groups;
+    }, {}),
+  ).sort((a, b) => b.minutes - a.minutes);
+  // The deadline that matters for a week is the month its open entries belong to (a week can span two months).
+  const draftMonth = monthOf(selected.list.filter((entry) => entry.status === "draft" || entry.status === "rejected").sort((a, b) => a.date.localeCompare(b.date))[0]?.date ?? weekStart);
+  const weekNext: { tone: string; text: string } = selected.list.some((entry) => entry.status === "rejected")
+    ? { tone: "red", text: "A project manager sent something back this week." }
+    : selected.drafts
+      ? { tone: "amber", text: `Not submitted yet. ${monthName(draftMonth)} closes ${fmtDay(monthDeadline(draftMonth))}.` }
+      : selected.list.length
+        ? { tone: "green", text: selected.status.label === "Approved" ? "Approved." : "Submitted. Waiting for approval." }
+        : { tone: "slate", text: "Nothing logged this week." };
+
+  const step = (amount: number) => (view === "month" ? setMonth(monthOf(addDays(`${month}-15`, amount * 30))) : setWeekStart(addDays(weekStart, amount * 7)));
+  const figure = view === "month" ? { minutes: monthMinutes, expected: monthExpected } : { minutes: selected.minutes, expected: weekExpected };
+  const next: { tone: string; text: string; action?: string; run?: () => void } = view === "month" ? monthNext : weekNext;
+  const maxWeek = Math.max(...history.map((monday) => Math.max(weekInfo(monday).minutes, expectedIn(monday, addDays(monday, 6)))), 1);
+
+  function sendChange() {
+    if (change.reason.trim().length < 5) return setChange({ ...change, error: "Write what you need to change and why. Finance reads it before opening the month." });
+    onRequest({ month, reason: change.reason.trim(), at: TODAY });
+    setChange({ open: false, reason: "", error: "" });
+    setToast(`Finance has your request. You'll hear when ${monthName(month)} is open for you.`);
+  }
+
   return (
-    <>
-      <section className="stat-grid">
-        <StatCard accent="sand" change="+2.5 h" icon="clock" label="Logged this week" note="vs. last week" value={`${total.toFixed(1)} h`} />
-        <StatCard accent="green" change="+4%" icon="trend" label="Billable share" note="vs. last week" value={`${billablePct}%`} />
-        <StatCard accent="navy" change="4 projects" icon="projects" label="Projects worked on" note="this week" value="4" />
-        <StatCard accent="amber" change="8.0 h" icon="bell" label="Left to log" note="due Friday 17:00" value="8.0 h" />
-      </section>
-      <section className="panel table-panel">
-        <div className="panel-heading">
-          <div className="week-nav">
-            <Button aria-label="Previous week" className="icon-button small"><Icon name="arrow" size={15} /></Button>
-            <div><Heading level={2}>Week 24 · Jun 10 – 14</Heading><p>Draft · not yet submitted</p></div>
-            <Button aria-label="Next week" className="icon-button small"><Icon name="arrow" size={15} /></Button>
+    <div className="calm">
+      <section className="tw-hero">
+        <div className="tw-hero-top">
+          <div className="tw-title">
+            <div className="tw-arrows">
+              <Button aria-label={view === "month" ? "Previous month" : "Previous week"} className="tw-arrow tw-arrow--back" onClick={() => step(-1)}><Icon name="arrow" size={14} /></Button>
+              <Button aria-label={view === "month" ? "Next month" : "Next week"} className="tw-arrow" onClick={() => step(1)}><Icon name="arrow" size={14} /></Button>
+            </div>
+            <div>
+              <h2 className="tw-display">{view === "month" ? monthTitle(month) : `Week ${isoWeek(weekStart)}`}</h2>
+              <p className="tw-subtle">
+                {view === "month" ? (locked ? `Locked since ${fmtDay(addDays(deadline, 1))}` : `Closes ${fmtDay(deadline)}`) : `${shortDate(weekStart)} – ${shortDate(weekEnd)}`}
+                <span className="ts-views" role="radiogroup">
+                  {(["month", "week"] as const).map((item) => (
+                    <button aria-checked={view === item} className={view === item ? "is-active" : ""} key={item} onClick={() => setView(item)} role="radio" type="button">
+                      {item === "month" ? "Monthly" : "Weekly"}
+                    </button>
+                  ))}
+                </span>
+              </p>
+            </div>
           </div>
-          <Button className="primary-button compact"><Icon name="check" size={16} /> Submit week</Button>
+          <div className="tw-figure">
+            <strong className="tw-display">{fmtH(figure.minutes)}<small>h</small></strong>
+            <span className="tw-subtle">of {fmtH(figure.expected)}{view === "month" && !locked && first <= TODAY ? " so far" : ""}</span>
+          </div>
         </div>
-        <div className="table-scroll"><table className="timesheet">
-          <thead><tr><th>Project</th>{days.map((day) => <th key={day}>{day}</th>)}<th>Total</th></tr></thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.project}>
-                <td><span className="case-cell"><strong>{row.project}</strong><small>{row.account} · {row.billable ? "Billable" : "Internal"}</small></span></td>
-                {row.hours.map((value, index) => <td className={value ? "" : "is-empty"} key={days[index]}>{value ? value.toFixed(1) : "–"}</td>)}
-                <td><strong>{row.hours.reduce((a, b) => a + b, 0).toFixed(1)}</strong></td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot><tr><td>Daily total</td>{dayTotals.map((value, index) => <td className={value >= 8 ? "is-met" : "is-short"} key={days[index]}>{value.toFixed(1)}</td>)}<td>{total.toFixed(1)} / 40</td></tr></tfoot>
-        </table></div>
-        <div className="split">
-          <div className="split-bar"><span style={{ width: `${billablePct}%` }} /></div>
-          <div className="split-legend"><span><i className="dot dot--sand" />Billable {billable.toFixed(1)} h</span><span><i className="dot dot--muted" />Internal {(total - billable).toFixed(1)} h</span></div>
+        <div className="tw-line"><span style={{ width: `${figure.expected ? Math.min(100, (figure.minutes / figure.expected) * 100) : 0}%` }} /></div>
+        <div className={`tw-next tw-next--${next.tone}`} role="status">
+          <span className="tw-next-text"><i className="tw-dot" />{next.text}</span>
+          {next.action && <Button className="primary-button compact" onClick={next.run}>{next.action}</Button>}
+          {view === "week" && <Button className="tw-link" onClick={() => onOpenWeek(weekStart)}>Open in Time entries</Button>}
         </div>
       </section>
-    </>
+
+      {view === "month" ? (
+        <section className="ts-grid">
+          <article className="tw-panel ts-calendar">
+            <div className="ts-cal-head">
+              {dayNames.map((name) => <span key={name}>{name.slice(0, 3)}</span>)}
+            </div>
+            {monthWeeks.map((monday) => (
+              <div className="ts-cal-week" key={monday}>
+                {weekDates(monday).map((date) => {
+                  const kind = mark(date);
+                  const minutes = minutesOn(date);
+                  return (
+                    <button
+                      className={["ts-day", `ts-day--${kind}`, date === TODAY && "is-today"].filter(Boolean).join(" ")}
+                      disabled={kind === "outside"}
+                      key={date}
+                      onClick={() => onOpenWeek(monday)}
+                      title={isHoliday(date) ? `${fmtDay(date)}: public holiday` : `${fmtDay(date)}: ${minutes ? `${fmtH(minutes)} h` : "no time"}`}
+                      type="button"
+                    >
+                      <span>{toDate(date).getUTCDate()}</span>
+                      <b>{kind === "outside" ? "" : minutes ? fmtH(minutes) : kind === "none" ? "–" : ""}</b>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+            <div className="ts-legend">
+              <span><i className="ts-key ts-day--full" />Full day</span>
+              <span><i className="ts-key ts-day--partial" />Part of the day</span>
+              <span><i className="ts-key ts-day--none" />Nothing logged</span>
+              <span><i className="ts-key ts-day--away" />Time away</span>
+            </div>
+          </article>
+          <aside className="ts-side">
+            <article className="tw-panel ts-card">
+              <h3>Where the time went</h3>
+              {split(first, last).length ? (
+                split(first, last).map((item) => (
+                  <div className="ts-split" key={item.label}>
+                    <span>{item.label}</span>
+                    <b>{fmtH(item.minutes)} h</b>
+                    <i className={`ts-bar ts-bar--${item.tone}`} style={{ width: `${monthMinutes ? (item.minutes / monthMinutes) * 100 : 0}%` }} />
+                  </div>
+                ))
+              ) : (
+                <p className="tw-hint">Nothing logged this month yet.</p>
+              )}
+            </article>
+            <article className="tw-panel ts-card">
+              <h3>Weeks</h3>
+              {monthWeeks.map((monday) => {
+                const info = weekInfo(monday);
+                return (
+                  <button className="ts-week" key={monday} onClick={() => onOpenWeek(monday)} type="button">
+                    <span>
+                      <strong>Week {isoWeek(monday)}</strong>
+                      <small>{shortDate(monday)} – {shortDate(addDays(monday, 6))}</small>
+                    </span>
+                    <span className={`tw-state tw-state--${info.status.tone}`}>{monday > TODAY ? "Not started" : info.status.label}</span>
+                    <b>{info.minutes ? `${fmtH(info.minutes)} h` : "–"}</b>
+                  </button>
+                );
+              })}
+            </article>
+          </aside>
+        </section>
+      ) : (
+        <section className="ts-grid">
+          <article className="tw-panel ts-history">
+            <h3>Last 8 weeks</h3>
+            <div className="ts-bars">
+              {history.map((monday) => {
+                const info = weekInfo(monday);
+                const expected = expectedIn(monday, addDays(monday, 6));
+                return (
+                  <button aria-pressed={monday === weekStart} className={`ts-col ${monday === weekStart ? "is-active" : ""}`} key={monday} onClick={() => setWeekStart(monday)} type="button">
+                    <span className="ts-col-value">{info.minutes ? fmtH(info.minutes) : "–"}</span>
+                    <span className="ts-col-track">
+                      <i className="ts-col-expected" style={{ bottom: `${(expected / maxWeek) * 100}%` }} />
+                      <i className={`ts-col-fill ts-col-fill--${info.status.tone}`} style={{ height: `${(info.minutes / maxWeek) * 100}%` }} />
+                    </span>
+                    <span className="ts-col-label">W{isoWeek(monday)}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="tw-hint">The line on each bar is what was expected that week. Grey bars are approved, light ones still open.</p>
+          </article>
+          <aside className="ts-side">
+            <article className="tw-panel ts-card">
+              <h3>Week {isoWeek(weekStart)}</h3>
+              {byRow.length ? (
+                byRow.map((item) => (
+                  <div className="ts-split" key={item.name + item.sub}>
+                    <span>{item.name}<small>{item.sub}</small></span>
+                    <b>{fmtH(item.minutes)} h</b>
+                    <i className="ts-bar ts-bar--client" style={{ width: `${selected.minutes ? (item.minutes / selected.minutes) * 100 : 0}%` }} />
+                  </div>
+                ))
+              ) : (
+                <p className="tw-hint">Nothing logged this week.</p>
+              )}
+            </article>
+          </aside>
+        </section>
+      )}
+
+      {change.open && (
+        <div className="modal-backdrop tw-sheet" onClick={() => setChange({ ...change, open: false })}>
+          <div aria-modal="true" className="modal-card" onClick={(event) => event.stopPropagation()} role="dialog">
+            <div className="panel-heading">
+              <div><Heading level={2}>Request a change to {monthName(month)}</Heading><p>The month is locked. Finance opens it for you for a few days if they agree.</p></div>
+              <Button aria-label="Close" className="icon-button small" onClick={() => setChange({ ...change, open: false })}><Icon name="close" size={15} /></Button>
+            </div>
+            <label className="field tw-search">
+              <span>What do you need to change, and why?</span>
+              <TextInput autoFocus maxLength={300} onChange={(event) => setChange({ ...change, reason: event.target.value, error: "" })} placeholder="e.g. Forgot 4 h on CRM migration on 28 Sep" value={change.reason} />
+            </label>
+            {change.error && <p className="form-message form-message--error" role="alert">{change.error}</p>}
+            <Button className="primary-button compact full tw-confirm" onClick={sendChange}>Send to Finance</Button>
+          </div>
+        </div>
+      )}
+      {toast && <div className="tw-toast" role="status">{toast}</div>}
+    </div>
   );
 }
 
@@ -3432,6 +3738,17 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [deals, setDeals] = useState(initialDeals);
   const [dealId, setDealId] = useState(initialDeals[0].id);
+  const [timeEntries, setTimeEntries] = useState(initialTimeEntries);
+  const [timeWeek, setTimeWeek] = useState(mondayOf(TODAY));
+  const [changeRequests, setChangeRequests] = useState<ChangeRequest[]>([]);
+  const timeData: TimeData = {
+    entries: timeEntries,
+    setEntries: setTimeEntries,
+    weekStart: timeWeek,
+    setWeekStart: setTimeWeek,
+    requests: changeRequests,
+    onRequest: (request) => setChangeRequests([...changeRequests, request]),
+  };
 
   const openDeal = (id: string) => {
     setDealId(id);
@@ -3449,8 +3766,18 @@ export default function App() {
   else if (page === "resources") content = <Resources />;
   else if (page === "utilization") content = <Utilization />;
   else if (page === "service") content = <Service />;
-  else if (page === "time") content = <TimeEntries />;
-  else if (page === "weekly") content = <WeeklySummary />;
+  else if (page === "time") content = <TimeEntries {...timeData} />;
+  else if (page === "summary")
+    content = (
+      <TimeSummary
+        {...timeData}
+        onOpenWeek={(monday) => {
+          setTimeWeek(monday);
+          setPage("time");
+          window.scrollTo(0, 0);
+        }}
+      />
+    );
   else if (page === "approvals") content = <Approvals />;
   else if (page === "hours") content = <HoursOverview />;
   else if (page === "accounts") content = <Accounts deals={deals} onOpenDeal={openDeal} />;

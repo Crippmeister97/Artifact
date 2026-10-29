@@ -361,11 +361,6 @@ tr.is-clickable { cursor: pointer; } tr.is-clickable:hover td { background: #f7f
 /* Weekly summary */
 .week-nav { display: flex; align-items: center; gap: 12px; }
 .week-nav > button:first-child .icon { transform: rotate(180deg); }
-.timesheet th:not(:first-child), .timesheet td:not(:first-child) { text-align: center; }
-.timesheet td.is-empty { color: #c3c1b8; }
-.timesheet tfoot td { height: 46px; border-top: 1px solid var(--line); border-bottom: 0; color: var(--ink); font-weight: 650; }
-.timesheet tfoot td.is-met { color: var(--green); }
-.timesheet tfoot td.is-short { color: var(--amber); }
 .split { margin: 6px 0 14px; display: flex; align-items: center; gap: 20px; }
 .split-bar { height: 8px; flex: 1; border-radius: 8px; background: #e2dfd6; overflow: hidden; }
 .split-bar span { display: block; height: 100%; background: #9f967c; }
@@ -991,3 +986,82 @@ button.mini-row > .icon { color: var(--muted); }
 .calm .ho-table td.ho-missing.is-short, .calm .ho-table td.ho-idle { color: var(--red); }
 .calm .td-bar { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); }
 .calm .td-bar .secondary-button { justify-content: center; }
+
+/* Month close and expected hours in Time entries */
+.calm .tw-next--slate .tw-dot { background: #8d897c; }
+.calm .tw-locked { display: inline-flex; align-items: center; gap: 8px; color: #5e5b51; }
+.calm .tw-locked::before { content: ""; width: 6px; height: 6px; border-radius: 1px; background: #8d897c; }
+.calm .tw-grid th.is-locked { color: #c2beb1; }
+
+/* Time summary: Monthly and Weekly views of your own time */
+.calm .ts-views { margin-left: 4px; padding: 2px; border: 1px solid var(--hair); border-radius: 999px; display: inline-flex; gap: 2px; }
+.calm .ts-views button { height: 24px; padding: 0 12px; border: 0; border-radius: 999px; color: var(--quiet); background: transparent; font-size: 11px; font-weight: 600; }
+.calm .ts-views button.is-active { color: #fff; background: var(--navy); }
+.calm .ts-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr); gap: 20px; align-items: start; }
+.calm .ts-calendar, .calm .ts-history { padding: 20px 22px; }
+.calm .ts-cal-head, .calm .ts-cal-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.calm .ts-cal-head span { padding: 0 0 8px; color: #a19d90; font-size: 10px; font-weight: 600; letter-spacing: .08em; text-align: center; text-transform: uppercase; }
+.calm .ts-cal-week { margin-bottom: 6px; }
+.calm .ts-day { height: 62px; padding: 7px 8px; border: 1px solid transparent; border-radius: 10px; display: flex; flex-direction: column; justify-content: space-between; color: var(--ink); background: var(--soft); text-align: left; }
+.calm .ts-day span { color: var(--quiet); font-size: 11px; }
+.calm .ts-day b { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.calm .ts-day:hover:not(:disabled) { border-color: #cfcabb; }
+.calm .ts-day.is-today { box-shadow: inset 0 0 0 1.5px var(--navy); }
+.calm .ts-day--full { background: #ece7d8; }
+.calm .ts-day--partial { background: #f4ecd8; }
+.calm .ts-day--none { background: #fff; border-color: #ead1d3; }
+.calm .ts-day--none b { color: var(--red); }
+.calm .ts-day--away { background: #ebe8ef; }
+.calm .ts-day--off { background: transparent; }
+.calm .ts-day--future { background: transparent; border: 1px dashed var(--hair); }
+.calm .ts-day--outside { visibility: hidden; }
+.calm .ts-legend { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 16px; color: var(--quiet); font-size: 11px; }
+.calm .ts-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.calm .ts-key { width: 12px; height: 12px; border-radius: 4px; display: inline-block; }
+.calm .ts-side { display: flex; flex-direction: column; gap: 20px; }
+.calm .ts-card { padding: 18px 20px; }
+.calm .ts-card h3, .calm .ts-history h3 { margin: 0 0 12px; color: #a19d90; font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.calm .ts-split { padding: 8px 0; display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; font-size: 13px; }
+.calm .ts-split span { display: flex; flex-direction: column; gap: 2px; color: var(--ink); }
+.calm .ts-split small { color: var(--quiet); font-size: 11px; }
+.calm .ts-split b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.calm .ts-bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; display: block; background: #9f967c; }
+.calm .ts-bar--support { background: #c9c0a4; }
+.calm .ts-bar--internal { background: #7d8798; }
+.calm .ts-bar--away { background: #b7aec4; }
+.calm .ts-week { width: 100%; padding: 10px 0; border: 0; border-bottom: 1px solid #f0efe9; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 14px; color: var(--ink); background: transparent; text-align: left; font-size: 12px; }
+.calm .ts-week:last-child { border-bottom: 0; }
+.calm .ts-week:hover strong { text-decoration: underline; text-underline-offset: 3px; }
+.calm .ts-week > span:first-child { display: flex; flex-direction: column; gap: 2px; }
+.calm .ts-week strong { font-size: 13px; font-weight: 600; }
+.calm .ts-week small { color: var(--quiet); font-size: 11px; }
+.calm .ts-week b { min-width: 44px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.calm .ts-bars { height: 220px; display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 10px; align-items: end; }
+.calm .ts-col { height: 100%; padding: 0; border: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; background: transparent; }
+.calm .ts-col-value { color: var(--quiet); font-size: 11px; font-variant-numeric: tabular-nums; }
+.calm .ts-col-track { position: relative; width: 100%; max-width: 44px; flex: 1; border-radius: 8px 8px 3px 3px; background: var(--soft); overflow: visible; }
+.calm .ts-col-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 8px 8px 3px 3px; background: #d9d3c1; }
+.calm .ts-col-fill--green { background: #b9b29c; }
+.calm .ts-col-fill--red { background: #e3b4b8; }
+.calm .ts-col-expected { position: absolute; left: -4px; right: -4px; z-index: 1; height: 2px; background: var(--ink); opacity: .55; }
+.calm .ts-col-label { color: #a19d90; font-size: 11px; }
+.calm .ts-col.is-active .ts-col-label, .calm .ts-col.is-active .ts-col-value { color: var(--ink); font-weight: 600; }
+.calm .ts-col.is-active .ts-col-track { box-shadow: 0 0 0 1.5px var(--navy); }
+.calm .ts-history .tw-hint { margin-top: 12px; }
+@media (max-width: 1100px) {
+  .calm .ts-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .calm .ts-day { height: 52px; padding: 5px; }
+  .calm .ts-day b { font-size: 12px; }
+  .calm .ts-cal-head, .calm .ts-cal-week { gap: 3px; }
+  .calm .ts-bars { gap: 4px; height: 180px; }
+}
+@media (max-width: 700px) {
+  .calm .tw-hero { padding: 18px 16px; }
+  .calm .tw-hero-top { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .calm .tw-title { gap: 10px; }
+  .calm .tw-figure strong { font-size: 32px; }
+  .calm .ts-views { margin-left: 0; }
+  .calm .ts-calendar, .calm .ts-history, .calm .ts-card { padding: 14px; }
+}
