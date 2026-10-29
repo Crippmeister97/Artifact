@@ -1580,22 +1580,23 @@ function TimeEntries() {
   const banner: { tone: string; text: string; action?: string; run?: () => void; dismiss?: boolean } | null = (() => {
     if (rejected) {
       const who = projectOf(rejected.project)?.pm ?? "Your PM";
-      return { tone: "red", text: `${who} sent back ${fmtDay(rejected.date)}: “${rejected.pmComment ?? "see the comment"}”`, action: "Show me", run: () => fixEntry(rejected) };
+      return { tone: "red", text: `${who} sent back ${fmtDay(rejected.date)}: “${rejected.pmComment ?? "see the comment"}”`, action: "Fix it", run: () => fixEntry(rejected) };
     }
     if (needsWork.length) {
       const first = needsWork[0];
-      return { tone: "amber", text: `${first.text}${first.count > 1 ? ` on ${plural(first.count, "entry", "entries")}` : ` for ${fmtDay(first.entry.date)}`}.`, action: "Add it", run: () => fixEntry(first.entry) };
+      return { tone: "amber", text: `${first.text}${first.count > 1 ? ` on ${plural(first.count, "entry", "entries")}` : ` for ${fmtDay(first.entry.date)}`}.`, action: "Complete it", run: () => fixEntry(first.entry) };
     }
     if (openDays.length && usualRow && !dismissed[weekStart]) {
-      const when = openDays.length === 1 ? fmtDay(openDays[0]) : `${openDays.length} open days`;
-      return { tone: "sand", text: `Your usual day is 8 h on ${rowName(usualRow)}. Fill ${when}?`, action: "Fill", run: () => fillDays(usualRow, openDays), dismiss: true };
+      const when = openDays.length === 1 ? dayNames[dayIndex(openDays[0])] : `${openDays.length} days`;
+      return { tone: "sand", text: `Your usual day is 8 h on ${rowName(usualRow)}.`, action: `Fill ${when}`, run: () => fillDays(usualRow, openDays), dismiss: true };
     }
     if (!openDays.length && toSubmit.length && weekOver)
-      return { tone: "sand", text: `Your week is complete with ${fmtH(total)} h. Submit it so your project managers can approve it and invoicing goes out on time.`, action: "Submit week", run: () => setModal("submit") };
-    if (!openDays.length && toSubmit.length) return { tone: "green", text: `You're up to date: ${fmtH(total)} h so far this week.` };
+      return { tone: "sand", text: "Your week is complete. Submitting it lets your project managers approve it, so invoicing goes out on time.", action: "Submit week", run: () => setModal("submit") };
+    if (!openDays.length && toSubmit.length) return { tone: "green", text: "You're up to date. The rest of the week is still open." };
     if (inWeek.length && !toSubmit.length)
-      return { tone: "green", text: inWeek.every((entry) => entry.status === "approved") ? "This week is approved. Nothing left to do." : "Submitted. Your project managers approve it next." };
-    return null;
+      return { tone: "green", text: inWeek.every((entry) => entry.status === "approved") ? "Approved. Nothing left to do this week." : "Submitted. Your project managers approve it next." };
+    if (usualRow && openDays.length) return null;
+    return { tone: "sand", text: inWeek.length ? `${plural(openDays.length, "day is", "days are")} still open.` : "Nothing logged this week yet.", action: "Add a row", run: () => setModal("addRow") };
   })();
 
   const absenceList = absenceDays();
@@ -1950,11 +1951,12 @@ function TimeEntries() {
     );
   };
 
+  // The next step: one sentence and at most one button, so there is always exactly one obvious thing to do.
   const nudge = banner && (
-    <div className={`tw-banner tw-banner--${banner.tone}`} role="status">
-      <span>{banner.text}</span>
-      {banner.action && <Button className={banner.tone === "sand" ? "primary-button compact" : "secondary-button"} onClick={banner.run}>{banner.action}</Button>}
-      {banner.dismiss && <Button className="text-button" onClick={() => setDismissed({ ...dismissed, [weekStart]: true })}>Not now</Button>}
+    <div className={`tw-next tw-next--${banner.tone}`} role="status">
+      <span className="tw-next-text"><i className="tw-dot" />{banner.text}</span>
+      {banner.action && <Button className="primary-button compact" onClick={banner.run}>{banner.action}</Button>}
+      {banner.dismiss && <Button className="tw-link" onClick={() => setDismissed({ ...dismissed, [weekStart]: true })}>Not now</Button>}
     </div>
   );
 
@@ -1976,11 +1978,11 @@ function TimeEntries() {
 
   if (narrow)
     return (
-      <>
+      <div className="calm">
         <section className="td-head">
           <div className="td-week">
             <Button aria-label="Previous week" className="icon-button small" onClick={() => goWeek(-1)}><Icon name="arrow" size={15} /></Button>
-            <div><strong>{weekLabel}</strong><small>{rangeLabel}</small></div>
+            <div><strong className="tw-display">{weekLabel}</strong><small>{rangeLabel}</small></div>
             <Button aria-label="Next week" className="icon-button small" onClick={() => goWeek(1)}><Icon name="arrow" size={15} /></Button>
           </div>
           <div className="td-sum"><Badge tone={status.tone}>{status.label}</Badge><span>{fmtH(total)} / 40 h</span></div>
@@ -2028,40 +2030,41 @@ function TimeEntries() {
         </section>
         <div className="td-bar">
           <Button className="secondary-button" onClick={() => setModal("actions")}>Actions</Button>
-          <Button className="primary-button" disabled={!toSubmit.length && inWeek.length > 0} onClick={() => setModal("submit")}><Icon name="check" size={16} /> Submit week</Button>
+          {banner?.action !== "Submit week" && (
+            <Button className="secondary-button" disabled={!toSubmit.length && inWeek.length > 0} onClick={() => setModal("submit")}><Icon name="check" size={16} /> Submit week</Button>
+          )}
         </div>
         {overlays}
-      </>
+      </div>
     );
 
   return (
-    <>
-      <section className="tw-head">
-        <div className="week-nav">
-          <Button aria-label="Previous week" className="icon-button small" onClick={() => goWeek(-1)}><Icon name="arrow" size={15} /></Button>
-          <div>
-            <Heading level={2}>{weekLabel} · {rangeLabel}</Heading>
-            <p>
-              <Badge tone={status.tone}>{status.label}</Badge>
-              {saved && <span className="saved-note"><Icon name="check" size={12} /> Saved</span>}
-            </p>
+    <div className="calm">
+      <section className="tw-hero">
+        <div className="tw-hero-top">
+          <div className="tw-title">
+            <div className="tw-arrows">
+              <Button aria-label="Previous week" className="tw-arrow tw-arrow--back" onClick={() => goWeek(-1)}><Icon name="arrow" size={14} /></Button>
+              <Button aria-label="Next week" className="tw-arrow" onClick={() => goWeek(1)}><Icon name="arrow" size={14} /></Button>
+            </div>
+            <div>
+              <h2 className="tw-display">{weekLabel}</h2>
+              <p className="tw-subtle">
+                {rangeLabel}
+                <span className={`tw-state tw-state--${status.tone}`}>{status.label}</span>
+                {saved && <span className="tw-saved">Saved</span>}
+                {weekStart !== mondayOf(TODAY) && <Button className="tw-link" onClick={goToday}>Back to this week</Button>}
+              </p>
+            </div>
           </div>
-          <Button aria-label="Next week" className="icon-button small" onClick={() => goWeek(1)}><Icon name="arrow" size={15} /></Button>
-          {weekStart !== mondayOf(TODAY) && <Button className="text-button" onClick={goToday}>This week</Button>}
+          <div className="tw-figure">
+            <strong className="tw-display">{fmtH(total)}<small>h</small></strong>
+            <span className="tw-subtle">of 40</span>
+          </div>
         </div>
-        <div className="tw-progress">
-          <div><strong>{fmtH(total)} h</strong><small>of 40 h</small></div>
-          <div className="progress"><span style={{ width: `${Math.min(100, (total / standardWeek) * 100)}%` }} /></div>
-        </div>
-        <div className="tw-actions">
-          <Button className="secondary-button" onClick={() => setModal("copy")}>Copy last week</Button>
-          <Button className="secondary-button" onClick={openAbsence}><Icon name="calendar" size={15} /> Vacation or absence</Button>
-          {canRecall && <Button className="secondary-button" onClick={recallWeek}>Recall</Button>}
-          <Button className="primary-button compact" disabled={!toSubmit.length && inWeek.length > 0} onClick={() => setModal("submit")}><Icon name="check" size={16} /> Submit week</Button>
-        </div>
+        <div className="tw-line"><span style={{ width: `${Math.min(100, (total / standardWeek) * 100)}%` }} /></div>
+        {nudge}
       </section>
-
-      {nudge}
 
       <section className="panel table-panel tw-panel">
         <div className="table-scroll">
@@ -2130,6 +2133,7 @@ function TimeEntries() {
                             onFocus={(event) => event.target.select()}
                             onKeyDown={(event) => onCellKey(event, r, c, id)}
                             readOnly={!!lock}
+                            placeholder={lock ? "" : "–"}
                             tabIndex={lock && !entry ? -1 : 0}
                             value={drafts[id] ?? (entry ? fmtH(entry.minutes) : "")}
                           />
@@ -2146,9 +2150,7 @@ function TimeEntries() {
             </tbody>
             <tfoot>
               <tr>
-                <td>
-                  <Button className="text-button tw-add-row" onClick={() => setModal("addRow")}><Icon name="plus" size={13} /> Add row</Button>
-                </td>
+                <td>Total</td>
                 {dates.map((date) => {
                   const minutes = dayMinutes(date);
                   const tone = dayTone(minutes);
@@ -2163,10 +2165,17 @@ function TimeEntries() {
             </tfoot>
           </table>
         </div>
+        <div className="tw-tools">
+          <Button className="tw-link" onClick={() => setModal("addRow")}><Icon name="plus" size={13} /> Add row</Button>
+          <Button className="tw-link" onClick={() => setModal("copy")}>Copy last week</Button>
+          <Button className="tw-link" onClick={openAbsence}>Vacation or absence</Button>
+          {toSubmit.length > 0 && banner?.action !== "Submit week" && <Button className="tw-link" onClick={() => setModal("submit")}>Submit week</Button>}
+          {canRecall && <Button className="tw-link" onClick={recallWeek}>Recall</Button>}
+        </div>
       </section>
       {popover()}
       {overlays}
-    </>
+    </div>
   );
 }
 
@@ -2470,12 +2479,12 @@ function HoursOverview() {
   const scale = Math.max(...rows.map((row) => Math.max(row.stats.expected, row.stats.reported)), 1);
 
   return (
-    <>
+    <div className="calm">
       <section className="tw-head ho-head">
         <div className="week-nav">
           <Button aria-label="Previous period" className="icon-button small" disabled={position <= 0} onClick={() => setPeriodKey(sameKind[position - 1].key)}><Icon name="arrow" size={15} /></Button>
           <div>
-            <Heading level={2}>{period.label}</Heading>
+            <h2 className="tw-display">{period.label}</h2>
             <p>
               {month ? (
                 lock ? <Badge tone="slate">Locked {shortDate(lock.at)}</Badge> : <Badge tone="sand">Open · deadline {shortDate(deadlineOf(month))}</Badge>
@@ -2504,29 +2513,29 @@ function HoursOverview() {
       <section className="ho-tiles">
         <article className="ho-tile">
           <span>Reported</span>
-          <strong>{pct}%</strong>
+          <strong className="tw-display">{pct}%</strong>
           <small>{fmtHours(reported)} of {fmtHours(expected)} h expected</small>
           <div className="progress"><span style={{ width: `${Math.min(100, pct)}%` }} /></div>
         </article>
         <article className="ho-tile">
           <span>Complete</span>
-          <strong>{complete} of {rows.length}</strong>
+          <strong className="tw-display">{complete} of {rows.length}</strong>
           <small>people with all expected hours</small>
         </article>
         <article className={`ho-tile ${missing ? "is-alert" : ""}`}>
           <span>Missing</span>
-          <strong>{fmtHours(missing)} h</strong>
+          <strong className="tw-display">{fmtHours(missing)} h</strong>
           <small>{plural(missingPeople.length, "person", "people")} below expected</small>
         </article>
         <article className="ho-tile">
           <span>Not approved yet</span>
-          <strong>{fmtHours(waiting + draft)} h</strong>
+          <strong className="tw-display">{fmtHours(waiting + draft)} h</strong>
           <small>{fmtHours(waiting)} h waiting for a PM · {fmtHours(draft)} h in draft</small>
         </article>
         {month && lock && (
           <article className={`ho-tile ${afterLock ? "is-alert" : ""}`}>
             <span>Added after lock</span>
-            <strong>{fmtHours(afterLock)} h</strong>
+            <strong className="tw-display">{fmtHours(afterLock)} h</strong>
             <small>needs a new invoice run</small>
           </article>
         )}
@@ -2718,7 +2727,7 @@ function HoursOverview() {
         </div>
       )}
       {toast && <div className="tw-toast" role="status">{toast}</div>}
-    </>
+    </div>
   );
 }
 
