@@ -784,6 +784,23 @@ button.mini-row > .icon { color: var(--muted); }
 .ho-day--absence { background: #b7aec4; }
 .ho-day--off { background: #ecebe6; }
 .ho-day--future { background: repeating-linear-gradient(135deg, #f4f4f0 0 2px, #e3e3dc 2px 4px); }
+/* Each day shows how far its time has come: approved, with the PM, or not submitted yet. Part days are shorter. */
+.ho-days { align-items: flex-end; }
+.ho-day.is-approved { background: #8f876d; }
+.ho-day.is-submitted { background: #c9bb93; }
+.ho-day.is-draft { background: repeating-linear-gradient(135deg, #d8cdb0 0 2px, #f1ecdd 2px 4px); box-shadow: inset 0 0 0 1px #d8cdb0; }
+.ho-day--partial { height: 10px; }
+.ho-steps { min-width: 220px; }
+.ho-table .case-cell strong { white-space: nowrap; }
+.ho-step { display: block; max-width: 260px; padding-left: 13px; text-indent: -13px; font-size: 12px; line-height: 1.45; }
+.ho-step::before { content: ""; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; display: inline-block; vertical-align: 1px; background: #c9bb93; }
+.ho-step--pm::before { background: #7d8798; }
+.ho-step.is-upcoming { color: var(--quiet, var(--muted)); }
+.ho-step.is-late { color: var(--red); }
+.ho-step.is-late::before { background: var(--red); }
+.ho-step.is-done { color: var(--green); }
+.ho-step.is-done::before { display: none; }
+.ho-remind-all { margin-left: auto; display: flex; gap: 14px; }
 .ho-hint { display: block; margin-top: 4px; color: var(--red); font-size: 9px; }
 .ho-sub { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
 .ho-bar { position: relative; width: 120px; height: 9px; border-radius: 5px; display: flex; background: #eeede7; overflow: visible; }

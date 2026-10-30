@@ -2354,8 +2354,8 @@ type HoursPerson = {
 };
 type HoursPeriod = { key: string; kind: "month" | "week"; label: string; start: string; end: string };
 type DayState = "full" | "partial" | "none" | "absence" | "off" | "future";
-type HoursSort = "name" | "expected" | "reported" | "missing" | "last";
-type HoursFilter = "all" | "missing" | "waiting" | "inactive" | "afterLock" | "empty";
+type HoursSort = "name" | "submitted" | "last";
+type HoursFilter = "all" | "consultant" | "pm" | "done" | "inactive" | "afterLock" | "empty";
 type MonthLock = { at: string; by: string };
 type Unlock = { person: string; month: string; until: string; reason: string; at: string; by: string };
 
@@ -2401,7 +2401,10 @@ function buildHours() {
       const created = late?.created ?? (person.habit === "daily" ? date : person.habit === "weekly" ? addDays(mondayOf(date), 4) : date < "2026-10-01" ? "2026-10-02" : "2026-11-02");
       if (created > TODAY) continue;
       const week = isoWeek(date);
-      let status: HoursStatus = week <= 42 ? (person.pending || late ? "submitted" : "approved") : week === 43 ? "submitted" : "draft";
+      // A weekly rhythm (what Henry wants): last week is approved, this week was submitted today (Friday). Mikael K. is a
+      // week behind on approvals, and a few people's hours have waited for weeks, as in Dynamics today.
+      const behind = person.pm === "Mikael K." && week === 43;
+      let status: HoursStatus = person.pending || late || behind ? "submitted" : week <= 43 ? "approved" : "submitted";
       if (person.drafts && date >= "2026-10-01") status = "draft";
       const base = { person: person.id, date, status, created };
       if (inRanges(date, person.vacation) || inRanges(date, person.sick)) {
@@ -2447,7 +2450,10 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
   const list = hoursEntries.filter((entry) => entry.person === person.id && entry.date >= period.start && entry.date <= period.end);
   const counted = list.filter((entry) => entry.date <= cutoff);
   const sum = (items: HoursEntry[]) => items.reduce((total, entry) => total + entry.hours, 0);
-  const days: { date: string; state: DayState; hours: number }[] = [];
+  const days: { date: string; state: DayState; hours: number; status?: HoursStatus }[] = [];
+  // A day is only as far along as its least finished entry.
+  const dayStatus = (items: HoursEntry[]): HoursStatus | undefined =>
+    !items.length ? undefined : items.some((entry) => entry.status === "draft") ? "draft" : items.some((entry) => entry.status === "submitted") ? "submitted" : "approved";
   let expected = 0;
   let run = 0;
   let longestGap = 0;
@@ -2473,9 +2479,10 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
       longestGap = Math.max(longestGap, run);
       run = 0;
     }
-    days.push({ date, state, hours });
+    days.push({ date, state, hours, status: dayStatus(onDay) });
   }
   const reported = sum(counted);
+  const weeksOf = (status: HoursStatus) => [...new Set(counted.filter((entry) => entry.status === status).map((entry) => entry.date).sort().map((date) => mondayOf(date)))];
   const all = hoursEntries.filter((entry) => entry.person === person.id);
   const last = all.reduce((latest, entry) => (entry.date > latest ? entry.date : latest), "");
   return {
@@ -2486,15 +2493,47 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
     client: sum(counted.filter((entry) => entry.kind === "client")),
     internal: sum(counted.filter((entry) => entry.kind === "internal")),
     absence: sum(counted.filter((entry) => entry.kind === "absence")),
-    approved: sum(list.filter((entry) => entry.status === "approved")),
-    waiting: sum(list.filter((entry) => entry.status === "submitted")),
-    draft: sum(list.filter((entry) => entry.status === "draft")),
+    approved: sum(counted.filter((entry) => entry.status === "approved")),
+    waiting: sum(counted.filter((entry) => entry.status === "submitted")),
+    draft: sum(counted.filter((entry) => entry.status === "draft")),
+    submitted: sum(counted.filter((entry) => entry.status !== "draft")),
+    // Mondays of the weeks still in draft or still with the PM, for the next step.
+    draftWeeks: weeksOf("draft"),
+    waitingWeeks: weeksOf("submitted"),
     afterLock: sum(list.filter((entry) => locks[monthOf(entry.date)] && entry.created > locks[monthOf(entry.date)].at)),
     // A run of empty working days between reported ones usually means vacation that wasn't logged.
     gap: reported > 0 ? longestGap : 0,
     last,
     idle: last ? workdaysBetween(last, TODAY) : 99,
   };
+}
+
+type HoursStats = ReturnType<typeof personHours>;
+type NextStep = { who: "consultant" | "pm"; text: string; late: boolean };
+
+// Whose turn it is. Invoicing uses approved hours only (Henry, 30 Oct), so a period is done when every working day is
+// submitted and approved. In a weekly rhythm consultants submit a week by the Monday after and PMs approve it by the
+// Wednesday after. Anything not due yet is shown, but quietly; only overdue steps put someone behind.
+function nextSteps(person: HoursPerson, stats: HoursStats): NextStep[] {
+  const first = person.name.split(" ")[0];
+  const submitDue = (monday: string) => addDays(monday, 7);
+  const approveDue = (monday: string) => addDays(monday, 9);
+  const when = (due: string) => (due < TODAY ? `${plural(Math.max(1, workdaysBetween(due, TODAY)), "day", "days")} late` : `due ${fmtDay(due)}`);
+  // "week 43", or "weeks 40–43" for a run.
+  const weeks = (mondays: string[]) => (mondays.length === 1 ? `week ${isoWeek(mondays[0])}` : `weeks ${isoWeek(mondays[0])}–${isoWeek(mondays[mondays.length - 1])}`);
+  // Split weeks into overdue and not yet due, so each becomes its own step.
+  const split = (mondays: string[], due: (monday: string) => string) => [mondays.filter((monday) => due(monday) < TODAY), mondays.filter((monday) => due(monday) >= TODAY)];
+  const steps: NextStep[] = [];
+  if (stats.expected && !stats.reported) return [{ who: "consultant", text: `${first}: nothing logged yet`, late: true }];
+  const emptyWeeks = [...new Set(stats.days.filter((day) => day.state === "none").map((day) => mondayOf(day.date)))];
+  const hoursIn = (mondays: string[]) => stats.days.filter((day) => day.state === "none" && mondays.includes(mondayOf(day.date))).length * person.perDay;
+  for (const group of split(emptyWeeks, submitDue))
+    if (group.length) steps.push({ who: "consultant", text: `${first}: log ${fmtHours(hoursIn(group))} h in ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY });
+  for (const group of split(stats.draftWeeks.filter((monday) => !emptyWeeks.includes(monday)), submitDue))
+    if (group.length) steps.push({ who: "consultant", text: `${first}: submit ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY });
+  for (const group of split(stats.waitingWeeks, approveDue))
+    if (group.length) steps.push({ who: "pm", text: `${person.pm}: approve ${weeks(group)} · ${when(approveDue(group[0]))}`, late: approveDue(group[0]) < TODAY });
+  return steps;
 }
 
 function HoursOverview() {
@@ -2516,7 +2555,10 @@ function HoursOverview() {
   const current = period.end >= TODAY;
   const cutoff = current && period.kind === "week" ? TODAY : period.end;
   const rows = hoursPeople
-    .map((person) => ({ person, stats: personHours(person, period, locks, cutoff), unlock: unlocks.find((item) => item.person === person.id && item.month === month && item.until >= TODAY) }))
+    .map((person) => {
+      const stats = personHours(person, period, locks, cutoff);
+      return { person, stats, steps: nextSteps(person, stats), unlock: unlocks.find((item) => item.person === person.id && item.month === month && item.until >= TODAY) };
+    })
     .sort((a, b) => {
       const value = (row: typeof a) => (sort.key === "name" ? 0 : sort.key === "last" ? row.stats.last : row.stats[sort.key]);
       const by = sort.key === "name" ? 0 : value(a) < value(b) ? -1 : value(a) > value(b) ? 1 : 0;
@@ -2534,26 +2576,34 @@ function HoursOverview() {
 
   const total = (pick: (row: (typeof rows)[number]) => number) => rows.reduce((sum, row) => sum + pick(row), 0);
   const expected = total((row) => row.stats.expected);
-  const reported = total((row) => row.stats.reported);
+  const submitted = total((row) => row.stats.submitted);
+  const approved = total((row) => row.stats.approved);
   const missing = total((row) => row.stats.missing);
   const waiting = total((row) => row.stats.waiting);
   const draft = total((row) => row.stats.draft);
   const afterLock = total((row) => row.stats.afterLock);
-  const complete = rows.filter((row) => !row.stats.missing).length;
+  const behind = (row: (typeof rows)[number], who: NextStep["who"]) => row.steps.some((step) => step.who === who && step.late);
+  const onTrack = rows.filter((row) => !row.steps.some((step) => step.late)).length;
+  const consultantTurn = rows.filter((row) => behind(row, "consultant"));
+  const pmTurn = rows.filter((row) => behind(row, "pm"));
+  const pmsWaiting = new Set(pmTurn.map((row) => row.person.pm));
+  const pmLateHours = total((row) => (behind(row, "pm") ? row.stats.waiting : 0));
   const missingPeople = rows.filter((row) => row.stats.missing > 0);
 
   const tests: Record<HoursFilter, (row: (typeof rows)[number]) => boolean> = {
     all: () => true,
-    missing: (row) => row.stats.missing > 0,
-    waiting: (row) => row.stats.waiting + row.stats.draft > 0,
+    consultant: (row) => behind(row, "consultant"),
+    pm: (row) => behind(row, "pm"),
+    done: (row) => !row.steps.some((step) => step.late),
     inactive: (row) => row.stats.idle > 5,
     empty: (row) => row.stats.gap >= 3,
     afterLock: (row) => row.stats.afterLock > 0,
   };
   const filters: { key: HoursFilter; label: string }[] = [
     { key: "all", label: "Everyone" },
-    { key: "missing", label: "Missing hours" },
-    { key: "waiting", label: "Not approved yet" },
+    { key: "done", label: "On track" },
+    { key: "consultant", label: "Consultant behind" },
+    { key: "pm", label: "PM behind" },
     { key: "empty", label: "Gaps, vacation not logged?" },
     { key: "inactive", label: "No time for 7 days" },
     { key: "afterLock", label: "Added after lock" },
@@ -2628,9 +2678,9 @@ function HoursOverview() {
   }
 
   function exportCsv() {
-    const header = ["Person", "Role", "Unit", "Project manager", "Expected h", "Reported h", "Missing h", "Client h", "Internal h", "Absence h", "Approved h", "Waiting h", "Draft h", "Added after lock h", "Last time"];
+    const header = ["Person", "Role", "Unit", "Project manager", "Expected h", "Logged h", "Submitted h", "Missing h", "Client h", "Internal h", "Absence h", "Approved h", "Waiting h", "Draft h", "Added after lock h", "Last time", "Next step"];
     const lines = rows.map(({ person, stats }) =>
-      [person.name, person.role, person.unit, person.pm, stats.expected, stats.reported, stats.missing, stats.client, stats.internal, stats.absence, stats.approved, stats.waiting, stats.draft, stats.afterLock, stats.last]
+      [person.name, person.role, person.unit, person.pm, stats.expected, stats.reported, stats.submitted, stats.missing, stats.client, stats.internal, stats.absence, stats.approved, stats.waiting, stats.draft, stats.afterLock, stats.last, nextSteps(person, stats).map((step) => step.text).join("; ") || "Done"]
         .map((value) => `"${String(value).replace(/"/g, '""')}"`)
         .join(","),
     );
@@ -2641,7 +2691,7 @@ function HoursOverview() {
     URL.revokeObjectURL(link.href);
   }
 
-  const pct = expected ? Math.round((reported / expected) * 100) : 0;
+  const pctOf = (hours: number) => (expected ? Math.round((hours / expected) * 100) : 0);
 
   return (
     <div className="calm">
@@ -2677,25 +2727,31 @@ function HoursOverview() {
 
       <section className="ho-tiles">
         <article className="ho-tile">
-          <span>Reported</span>
-          <strong className="tw-display">{pct}%</strong>
-          <small>{fmtHours(reported)} of {fmtHours(expected)} h expected</small>
-          <div className="progress"><span style={{ width: `${Math.min(100, pct)}%` }} /></div>
+          <span>Submitted</span>
+          <strong className="tw-display">{pctOf(submitted)}%</strong>
+          <small>{fmtHours(submitted)} of {fmtHours(expected)} h expected</small>
+          <div className="progress"><span style={{ width: `${Math.min(100, pctOf(submitted))}%` }} /></div>
         </article>
         <article className="ho-tile">
-          <span>Complete</span>
-          <strong className="tw-display">{complete} of {rows.length}</strong>
-          <small>people with all expected hours</small>
-        </article>
-        <article className={`ho-tile ${missing ? "is-alert" : ""}`}>
-          <span>Missing</span>
-          <strong className="tw-display">{fmtHours(missing)} h</strong>
-          <small>{plural(missingPeople.length, "person", "people")} below expected</small>
+          <span>Approved</span>
+          <strong className="tw-display">{pctOf(approved)}%</strong>
+          <small>{fmtHours(approved)} h ready to invoice</small>
+          <div className="progress"><span style={{ width: `${Math.min(100, pctOf(approved))}%` }} /></div>
         </article>
         <article className="ho-tile">
-          <span>Not approved yet</span>
-          <strong className="tw-display">{fmtHours(waiting + draft)} h</strong>
-          <small>{fmtHours(waiting)} h waiting for a PM · {fmtHours(draft)} h in draft</small>
+          <span>On track</span>
+          <strong className="tw-display">{onTrack} of {rows.length}</strong>
+          <small>nothing overdue</small>
+        </article>
+        <article className={`ho-tile ${consultantTurn.length ? "is-alert" : ""}`}>
+          <span>Consultants behind</span>
+          <strong className="tw-display">{consultantTurn.length}</strong>
+          <small>{fmtHours(missing)} h missing · {fmtHours(draft)} h not submitted</small>
+        </article>
+        <article className={`ho-tile ${pmLateHours ? "is-alert" : ""}`}>
+          <span>PMs behind</span>
+          <strong className="tw-display">{fmtHours(pmLateHours)} h</strong>
+          <small>{pmsWaiting.size ? `${[...pmsWaiting].join(", ")} · ${fmtHours(waiting)} h with PMs in all` : `${fmtHours(waiting)} h with PMs, none overdue`}</small>
         </article>
         {month && lock && (
           <article className={`ho-tile ${afterLock ? "is-alert" : ""}`}>
@@ -2710,7 +2766,7 @@ function HoursOverview() {
         <div className="panel-heading">
           <div>
             <Heading level={2}>People</Heading>
-            <p>Expected = the person's working days × hours per day. Vacation and absence count as reported. Click a column to sort.</p>
+            <p>Only approved hours are invoiced. Each week: consultants submit by the Monday after, PMs approve by the Wednesday after. On track = nothing overdue; done = all approved.</p>
           </div>
           <label className="search-field">
             <Icon name="search" size={15} />
@@ -2723,11 +2779,10 @@ function HoursOverview() {
               {item.label} <b>{rows.filter(tests[item.key]).length}</b>
             </button>
           ))}
-          {missingPeople.length > 0 && (
-            <Button className="text-button ho-remind-all" onClick={() => setToast(`Reminder sent to ${plural(missingPeople.length, "person", "people")} with missing hours.`)}>
-              Remind everyone missing hours
-            </Button>
-          )}
+          <span className="ho-remind-all">
+            {consultantTurn.length > 0 && <Button className="text-button" onClick={() => setToast(`Reminder sent to ${plural(consultantTurn.length, "consultant", "consultants")} who are behind.`)}>Remind consultants</Button>}
+            {pmsWaiting.size > 0 && <Button className="text-button" onClick={() => setToast(`Asked ${plural(pmsWaiting.size, "project manager", "project managers")} to approve.`)}>Nudge PMs</Button>}
+          </span>
         </div>
         <div className="table-scroll">
           <table className="ho-table">
@@ -2735,15 +2790,15 @@ function HoursOverview() {
               <tr>
                 {sortHead("name", "Person")}
                 <th>Days</th>
-                {sortHead("reported", "Hours")}
-                {sortHead("missing", "Missing", "r")}
+                {sortHead("submitted", "Submitted")}
+                <th>Next step</th>
                 {sortHead("last", "Last time")}
                 <th />
               </tr>
             </thead>
             <tbody>
               {!visible.length && <tr><td className="tw-empty" colSpan={6}>Nobody matches this filter.</td></tr>}
-              {visible.map(({ person, stats, unlock }) => (
+              {visible.map(({ person, stats, steps, unlock }) => (
                 <tr key={person.id}>
                   <td>
                     <span className="company-cell">
@@ -2757,16 +2812,16 @@ function HoursOverview() {
                   <td>
                     <div className="ho-days">
                       {stats.days.map((day) => (
-                        <i className={`ho-day ho-day--${day.state}`} key={day.date} title={`${fmtDay(day.date)}: ${day.state === "off" ? "not a working day" : day.state === "future" ? `not yet${day.hours ? ` (${fmtHours(day.hours)} h so far)` : ""}` : day.state === "absence" ? "vacation or absence" : `${fmtHours(day.hours)} h`}`} />
+                        <i className={`ho-day ho-day--${day.state} ${day.status && day.state !== "absence" ? `is-${day.status}` : ""}`} key={day.date} title={`${fmtDay(day.date)}: ${day.state === "off" ? "not a working day" : day.state === "future" ? `not yet${day.hours ? ` (${fmtHours(day.hours)} h so far)` : ""}` : day.state === "absence" ? "vacation or absence" : `${fmtHours(day.hours)} h${day.status === "draft" ? ", not submitted" : day.status === "submitted" ? ", with the PM" : day.status === "approved" ? ", approved" : ""}`}`} />
                       ))}
                     </div>
                     {stats.gap >= 3 && <small className="ho-tag" title={`${stats.gap} working days in a row with no time. Vacation not logged?`}>{stats.gap}-day gap</small>}
                     {!stats.reported && stats.expected > 0 && <small className="ho-tag" title="Nothing reported for this period yet">Nothing yet</small>}
                   </td>
                   <td>
-                    {/* One progress bar against the person's own expected hours, split by where the time is in approval. */}
+                    {/* Drafts haven't left the consultant's desk, so only submitted time counts. */}
                     <div className="ho-progress-head">
-                      <strong>{fmtHours(stats.reported)}</strong>
+                      <strong>{fmtHours(stats.submitted)}</strong>
                       <span>of {fmtHours(stats.expected)} h{person.days.length * person.perDay < 40 ? ` · ${Math.round((person.days.length * person.perDay) / 0.4)}% time` : ""}</span>
                     </div>
                     <div className="ho-progress" title={`Client ${fmtHours(stats.client)} h · Internal ${fmtHours(stats.internal)} h · Absence ${fmtHours(stats.absence)} h`}>
@@ -2774,13 +2829,7 @@ function HoursOverview() {
                         <span className={`ho-progress--${part}`} key={part} style={{ width: `${stats.expected ? Math.min(100, (stats[part] / stats.expected) * 100) : 0}%` }} />
                       ))}
                     </div>
-                    <small className="ho-sub ho-progress-sub">
-                      {[
-                        stats.approved && !stats.waiting && !stats.draft ? "All approved" : stats.approved ? `${fmtHours(stats.approved)} approved` : "",
-                        stats.waiting ? `${fmtHours(stats.waiting)} with PM` : "",
-                        stats.draft ? `${fmtHours(stats.draft)} not submitted` : "",
-                      ].filter(Boolean).join(" · ")}
-                    </small>
+                    <small className="ho-sub ho-progress-sub">{stats.approved && stats.approved === stats.submitted ? "All approved" : `${fmtHours(stats.approved)} approved`}</small>
                     {(stats.afterLock > 0 || unlock) && (
                       <div className="ho-badges">
                         {stats.afterLock > 0 && <Badge tone="red">{fmtHours(stats.afterLock)} h after lock</Badge>}
@@ -2788,10 +2837,17 @@ function HoursOverview() {
                       </div>
                     )}
                   </td>
-                  <td className={`r ho-missing ${stats.missing ? "is-short" : ""}`}>{stats.missing ? fmtHours(stats.missing) : "✓"}</td>
+                  <td className="ho-steps">
+                    {!steps.length && <span className="ho-step is-done">✓ Done</span>}
+                    {steps.length > 0 && !steps.some((step) => step.late) && <span className="ho-step is-done">✓ On track</span>}
+                    {steps.map((step) => (
+                      <span className={`ho-step ho-step--${step.who} ${step.late ? "is-late" : "is-upcoming"}`} key={step.text}>{step.text}</span>
+                    ))}
+                  </td>
                   <td className={stats.idle > 5 ? "ho-idle" : ""}>{stats.last ? shortDate(stats.last) : "–"}{stats.idle > 5 && <small className="ho-sub">{stats.idle} working days ago</small>}</td>
                   <td className="ho-actions">
-                    {(stats.missing > 0 || stats.draft > 0) && <Button className="text-button" onClick={() => setToast(`Reminder sent to ${person.name}.`)}>Remind</Button>}
+                    {steps.some((step) => step.who === "consultant" && step.late) && <Button className="text-button" onClick={() => setToast(`Reminder sent to ${person.name}.`)}>Remind</Button>}
+                    {steps.some((step) => step.who === "pm" && step.late) && <Button className="text-button" onClick={() => setToast(`Asked ${person.pm} to approve ${person.name}'s hours.`)}>Nudge PM</Button>}
                     {month && lock && !unlock && <Button className="text-button" onClick={() => openUnlock(person.id)}>Unlock</Button>}
                   </td>
                 </tr>
@@ -2800,15 +2856,14 @@ function HoursOverview() {
           </table>
         </div>
         <div className="ho-legend">
-          <span><i className="ho-day ho-day--full" />Full day</span>
-          <span><i className="ho-day ho-day--partial" />Part of the day</span>
+          <span><i className="ho-day ho-day--full is-approved" />Approved</span>
+          <span><i className="ho-day ho-day--full is-submitted" />With the PM</span>
+          <span><i className="ho-day ho-day--full is-draft" />Not submitted</span>
+          <span><i className="ho-day ho-day--partial is-approved" />Part of the day</span>
           <span><i className="ho-day ho-day--none" />No time</span>
           <span><i className="ho-day ho-day--absence" />Vacation or absence</span>
           <span><i className="ho-day ho-day--off" />Not a working day</span>
           <span><i className="ho-day ho-day--future" />Not yet</span>
-          <span><i className="ho-bar-key ho-progress--approved" />Approved</span>
-          <span><i className="ho-bar-key ho-progress--waiting" />With PM</span>
-          <span><i className="ho-bar-key ho-progress--draft" />Not submitted</span>
         </div>
       </section>
 
