@@ -1154,3 +1154,28 @@ button.mini-row > .icon { color: var(--muted); }
 .pm-hours b { font-size: 13px; }
 .pm-hours b.is-late { color: var(--red); }
 .pm-hours small { color: var(--quiet, var(--muted)); font-size: 11px; }
+
+/* Entry history in the cell popover: newest first, quiet. */
+.tw-history { margin: 10px 0 4px; padding-top: 10px; border-top: 1px solid var(--hair, #ebe8df); display: grid; gap: 3px; }
+.tw-history > span { color: #a19d90; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.tw-history small { color: var(--quiet, var(--muted)); font-size: 11px; line-height: 1.4; }
+.tw-history b { color: var(--ink); font-weight: 600; }
+/* The one line that makes submitting mean something. */
+.tw-confirm-note { margin: 12px 0 0; color: var(--ink); font-size: 12px; line-height: 1.5; }
+.tw-guide .ar-item small { white-space: normal; }
+
+/* Simulated notifications under the bell. */
+.notice-wrap { position: relative; }
+.notice-list { position: absolute; right: 0; top: calc(100% + 8px); z-index: 40; width: 340px; padding: 12px; border: 1px solid var(--hair, #ebe8df); border-radius: 14px; display: grid; gap: 4px; background: var(--surface, #fff); box-shadow: 0 12px 32px rgba(30, 30, 20, .12); }
+.notice-list > strong { padding: 2px 6px 6px; font-size: 12px; }
+.notice-list button { padding: 8px 6px; border: 0; border-radius: 8px; display: grid; gap: 2px; background: transparent; text-align: left; cursor: pointer; font: inherit; }
+.notice-list button:hover { background: #f4f2ec; }
+.notice-list small { color: #a19d90; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.notice-list span { font-size: 12px; line-height: 1.45; }
+.notice-list p { padding: 6px; color: var(--muted); font-size: 12px; }
+/* Hours overview: the automatic reminder schedule. */
+.ho-reminders { margin-bottom: 18px; }
+.ho-reminder { padding: 10px 0; border-top: 1px solid var(--hair, #ebe8df); display: grid; grid-template-columns: 130px 1fr; gap: 14px; }
+.ho-reminder small { color: #a19d90; font-size: 11px; }
+.ho-reminder span { display: grid; gap: 2px; color: var(--quiet, var(--muted)); font-size: 12px; line-height: 1.45; }
+.ho-reminder strong { color: var(--ink); font-size: 12px; }

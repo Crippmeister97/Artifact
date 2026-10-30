@@ -427,7 +427,11 @@ function Sidebar({
   );
 }
 
-function Topbar({ page, onMenu }: { page: Page; onMenu: () => void }) {
+// A simulated Teams or email message, shown under the bell so the demo can show what people actually receive.
+type Notice = { channel: "Teams" | "Email"; at: string; text: string; page?: Page };
+
+function Topbar({ page, onMenu, notices = [], onOpen }: { page: Page; onMenu: () => void; notices?: Notice[]; onOpen?: (page: Page) => void }) {
+  const [open, setOpen] = useState(false);
   return (
     <header className="topbar">
       <div className="title-wrap">
@@ -445,10 +449,34 @@ function Topbar({ page, onMenu }: { page: Page; onMenu: () => void }) {
           <TextInput aria-label="Search" placeholder="Search clients, projects..." />
           <kbd>⌘ K</kbd>
         </label>
-        <Button aria-label="Notifications" className="icon-button notification">
-          <Icon name="bell" size={19} />
-          <span />
-        </Button>
+        <span className="notice-wrap">
+          <Button aria-expanded={open} aria-label="Notifications" className="icon-button notification" onClick={() => setOpen(!open)}>
+            <Icon name="bell" size={19} />
+            {notices.length > 0 && <span />}
+          </Button>
+          {open && (
+            <div className="notice-list" role="dialog" aria-label="Notifications">
+              <strong>Sent to you</strong>
+              {notices.length ? (
+                notices.map((notice) => (
+                  <button
+                    key={notice.at + notice.text}
+                    onClick={() => {
+                      if (notice.page) onOpen?.(notice.page);
+                      setOpen(false);
+                    }}
+                    type="button"
+                  >
+                    <small>{notice.channel} · {fmtWhen(notice.at)}</small>
+                    <span>{notice.text}</span>
+                  </button>
+                ))
+              ) : (
+                <p>Nothing new.</p>
+              )}
+            </div>
+          )}
+        </span>
         <Button className="primary-button"><Icon name="plus" size={18} /> Create new</Button>
       </div>
     </header>
@@ -999,9 +1027,12 @@ type TimeEntry = {
   customerText?: string;
   outsideHours?: boolean;
   preApprovedBy?: string;
+  history?: EntryEvent[];
 };
+// Who did what to an entry, and when. "You" is the signed-in consultant.
+type EntryEvent = { at: string; by: string; text: string; kind: string };
 type TimeRow = { key: string; project: string | null; type: TimeTypeCode; assigned?: boolean; preApprovedBy?: string };
-type TimeModal = "copy" | "absence" | "submit" | "addRow" | "request" | "overtime" | "change" | "actions" | null;
+type TimeModal = "copy" | "absence" | "submit" | "addRow" | "guide" | "request" | "overtime" | "change" | "actions" | null;
 type ChangeRequest = { month: string; reason: string; at: string };
 // The consultant's time lives in the app, so Time entries and Time summary show the same entries.
 type TimeData = {
@@ -1038,6 +1069,16 @@ const timeTypes: TimeType[] = [
   { code: "absence", name: "Absence", billable: false, needsProject: false, futureOk: true },
 ];
 const internalTypes: TimeTypeCode[] = ["internal_development", "presales_support", "customer_outreach", "internal_project", "resource_assignment_sales"];
+// One line per type, shown where the type is picked, so nobody needs the policy text to choose.
+const typeHelp: Partial<Record<TimeTypeCode, string>> = {
+  internal_development: "Courses and certifications",
+  presales_support: "Helping sales with an offer or a pitch",
+  customer_outreach: "Contacting customers to find new work",
+  internal_project: "Work on an internal project",
+  resource_assignment_sales: "Between assignments, helping sales place you",
+  vacation: "Approved vacation",
+  absence: "Sick, care of a child, a doctor's visit",
+};
 
 const timeProjects: TimeProject[] = [
   { id: "nova", name: "Nova implementation", account: "Nordic Solutions", kind: "client", pm: "Johanna S.", overtimeRate: 2400 },
@@ -1246,7 +1287,60 @@ function useNarrow(query = "(max-width: 767px)") {
   return narrow;
 }
 
-function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, onRequest }: TimeData) {
+// History for seeded entries, derived from their status: logged on the day, submitted on the Friday, and approved or sent
+// back by the project's PM the Monday after. Entries changed in the demo keep a real history from then on.
+function entryHistory(entry: TimeEntry): EntryEvent[] {
+  if (entry.history) return entry.history;
+  const friday = addDays(mondayOf(entry.date), 4);
+  const pm = projectOf(entry.project)?.pm ?? "Your manager";
+  const events: EntryEvent[] = [{ at: entry.date, by: "You", text: `Logged ${fmtH(entry.minutes)} h`, kind: "logged" }];
+  if (entry.status !== "draft") events.push({ at: friday < entry.date ? entry.date : friday, by: "You", text: "Submitted", kind: "status" });
+  if (entry.status === "approved") events.push({ at: addDays(friday, 3), by: pm, text: "Approved", kind: "status" });
+  if (entry.status === "rejected") events.push({ at: addDays(friday, 3), by: pm, text: `Sent back: ${entry.pmComment ?? "see comment"}`, kind: "status" });
+  return events;
+}
+
+const statusChange: Record<string, string> = {
+  "draft>submitted": "Submitted",
+  "rejected>submitted": "Submitted again",
+  "submitted>draft": "Recalled",
+  "rejected>draft": "Recalled",
+};
+
+// Compares the entries before and after a change and adds what happened to each entry's history. Typing in a text
+// field updates the last event of the same kind in the same minute instead of adding one per keystroke.
+function withHistory(before: TimeEntry[], after: TimeEntry[]): TimeEntry[] {
+  const old = new Map(before.map((entry) => [entry.id, entry]));
+  const now = new Date();
+  const at = `${TODAY}T${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  return after.map((entry) => {
+    const was = old.get(entry.id);
+    const events: Omit<EntryEvent, "at" | "by">[] = [];
+    if (!was) events.push({ text: `Logged ${fmtH(entry.minutes)} h`, kind: "logged" });
+    else {
+      if (was.minutes !== entry.minutes) events.push({ text: `Changed ${fmtH(was.minutes)} → ${fmtH(entry.minutes)} h`, kind: "hours" });
+      if (was.status !== entry.status) events.push({ text: statusChange[`${was.status}>${entry.status}`] ?? `Status: ${entry.status}`, kind: "status" });
+      if ((was.customerText ?? "") !== (entry.customerText ?? "")) events.push({ text: entry.customerText ? `Customer text: "${entry.customerText}"` : "Customer text removed", kind: "customerText" });
+      if ((was.task ?? "") !== (entry.task ?? "")) events.push({ text: entry.task ? `Task: ${entry.task}` : "Task removed", kind: "task" });
+      if (was.comment !== entry.comment) events.push({ text: entry.comment ? `Comment: "${entry.comment}"` : "Comment removed", kind: "comment" });
+      if (!!was.outsideHours !== !!entry.outsideHours) events.push({ text: entry.outsideHours ? "Confirmed outside ordinary hours" : "Outside ordinary hours unticked", kind: "outsideHours" });
+    }
+    if (!events.length) return entry;
+    const history = [...(was ? entryHistory(was) : [])];
+    for (const event of events) {
+      const last = history[history.length - 1];
+      if (last && last.kind === event.kind && last.at === at && event.kind !== "status") history[history.length - 1] = { ...event, at, by: "You" };
+      else history.push({ ...event, at, by: "You" });
+    }
+    return { ...entry, history };
+  });
+}
+
+const fmtWhen = (at: string) => `${fmtDay(at.slice(0, 10))}${at.length > 10 ? ` ${at.slice(11)}` : ""}`;
+
+function TimeEntries({ entries, setEntries: saveEntries, weekStart, setWeekStart, requests, onRequest }: TimeData) {
+  // Every change to the entries goes through here, so each entry keeps its own history.
+  const setEntries = (next: TimeEntry[]) => saveEntries(withHistory(entries, next));
   const narrow = useNarrow();
   const [addedRows, setAddedRows] = useState<Record<string, TimeRow[]>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -1675,6 +1769,9 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
     if (inWeek.length && !toSubmit.length)
       return { tone: "green", text: inWeek.every((entry) => entry.status === "approved") ? "Approved. Nothing left to do this week." : "Submitted. Your project managers approve it next." };
     if (usualRow && openDays.length) return null;
+    // No customer assignment this week: everyone still logs their time, on Internal hours (the policy from the monthly mingle).
+    if (openDays.length && !rows.some((row) => projectOf(row.project)?.kind === "client"))
+      return { tone: "sand", text: "No customer assignment this week. Log your time on Internal hours and pick what you did.", action: "What do I log?", run: () => setModal("guide") };
     return { tone: "sand", text: inWeek.length ? `${plural(openDays.length, "day is", "days are")} still open.` : "Nothing logged this week yet.", action: "Add a row", run: () => setModal("addRow") };
   })();
 
@@ -1724,7 +1821,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
               {internalLeft.map((type) =>
                 type === "internal_development" && customerProjects.length ? (
                   <div className="ar-dev" key={type}>
-                    {option(type, typeOf(type).name, "Courses and certifications", { key: rowKey(homeProject.id, type), project: homeProject.id, type })}
+                    {option(type, typeOf(type).name, typeHelp[type] ?? "", { key: rowKey(homeProject.id, type), project: homeProject.id, type })}
                     <span className="ar-dev-for">
                       Needed for an assignment?
                       {customerProjects
@@ -1735,7 +1832,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
                     </span>
                   </div>
                 ) : (
-                  option(type, typeOf(type).name, "", { key: rowKey(homeProject.id, type), project: homeProject.id, type })
+                  option(type, typeOf(type).name, typeHelp[type] ?? "", { key: rowKey(homeProject.id, type), project: homeProject.id, type })
                 ),
               )}
             </div>
@@ -1743,10 +1840,11 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
           {awayLeft.length > 0 && (
             <div className="ar-group">
               <h3>Time away</h3>
-              {awayLeft.map((type) => option(type, typeOf(type).name, "", { key: rowKey(null, type), project: null, type }))}
+              {awayLeft.map((type) => option(type, typeOf(type).name, typeHelp[type] ?? "", { key: rowKey(null, type), project: null, type }))}
             </div>
           )}
           <div className="ar-links">
+            <Button className="text-button" onClick={() => setModal("guide")}>Not sure what to log?</Button>
             <Button className="text-button" onClick={() => { setRequest({ query: "", project: "" }); setModal("request"); }}>Can't find your project? Ask to be added</Button>
             {overtimeProjects.length > 0 && <Button className="text-button" onClick={openOvertime}>Customer-ordered overtime</Button>}
           </div>
@@ -1796,6 +1894,43 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
           >
             {picked ? `Send request to ${picked.pm}` : "Pick a project"}
           </Button>
+        </>
+      );
+    }
+    // "What do I log when…?": situations people ask about, each leading to the right row. Wording to be confirmed
+    // with Finance once the purpose of each type is decided.
+    if (modal === "guide") {
+      const home = (type: TimeTypeCode): TimeRow | null => (homeProject ? { key: rowKey(homeProject.id, type), project: homeProject.id, type } : null);
+      const situations: { title: string; answer: string; row?: TimeRow | null; run?: () => void }[] = [
+        { title: "I worked for a customer I'm assigned to", answer: "Use the customer's row. It's already in your week.", run: () => setModal(null) },
+        { title: "A course or a certification", answer: "Internal Development on Internal hours. If the customer needs it for the assignment, log it on their project.", row: home("internal_development") },
+        { title: "I helped sales with an offer or a pitch", answer: "Presales Support on Internal hours.", row: home("presales_support") },
+        { title: "Between assignments, helping sales place me", answer: "Resource Assignment Sales on Internal hours.", row: home("resource_assignment_sales") },
+        { title: "Work on an internal project", answer: "Internal Project on Internal hours.", row: home("internal_project") },
+        ...(overtimeProjects.length ? [{ title: "Evening or weekend work the customer ordered", answer: "Overtime, approved in advance by your PM.", run: openOvertime }] : []),
+        { title: "I was sick or at the doctor's", answer: "Absence. No project needed.", row: { key: rowKey(null, "absence"), project: null, type: "absence" as TimeTypeCode } },
+        { title: "I was on vacation", answer: "Vacation. You can log several days at once.", run: openAbsence },
+      ];
+      return (
+        <>
+          {modalHead("What do I log when…?", "Pick what you did and we add the right row.")}
+          <div className="ar-group tw-guide">
+            {situations.map((item) => (
+              <button
+                className="ar-item"
+                key={item.title}
+                onClick={() => {
+                  if (item.run) item.run();
+                  else if (item.row) rows.some((row) => row.key === item.row!.key) ? (setModal(null), setFocusRow(item.row.key)) : addRow(item.row);
+                }}
+                type="button"
+              >
+                <strong>{item.title}</strong>
+                <small>{item.answer}</small>
+              </button>
+            ))}
+          </div>
+          <p className="tw-hint">Something else? Ask your project manager or Finance, and we'll add it here.</p>
         </>
       );
     }
@@ -1912,8 +2047,11 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
                 </p>
               ))}
               {warnings.map((text) => <p className="tw-msg tw-msg--warn" key={text}>{text}</p>)}
+              {!(blockers.length + needsWork.length) && (
+                <p className="tw-confirm-note">By submitting, you confirm that your hours for {weekLabel.toLowerCase()} are correct. You can recall them until your project manager approves them.</p>
+              )}
               <Button className="primary-button compact full tw-confirm" disabled={blockers.length + needsWork.length > 0} onClick={submitWeek}>
-                {blockers.length + needsWork.length ? "Fix the points above to submit" : "Submit week"}
+                {blockers.length + needsWork.length ? "Fix the points above to submit" : "Confirm and submit"}
               </Button>
             </>
           )}
@@ -1991,6 +2129,14 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
               <TextInput disabled={!editable} maxLength={500} onChange={(event) => updateEntry(entry.id, { comment: event.target.value })} placeholder="Optional" value={entry.comment} />
             </label>
             {lock && <p className="tw-hint">{lock}.</p>}
+            <div className="tw-history">
+              <span>History</span>
+              {[...entryHistory(entry)].reverse().slice(0, 5).map((event, index) => (
+                <small key={index}>
+                  <b>{event.text}</b> · {event.by} · {fmtWhen(event.at)}
+                </small>
+              ))}
+            </div>
             <Button className="primary-button compact full tw-pop-done" onClick={() => setPop(null)}>Done</Button>
           </>
         )}
@@ -2516,6 +2662,9 @@ type NextStep = { who: "consultant" | "pm"; text: string; late: boolean; hours: 
 // Wednesday after. Anything not due yet is shown, but quietly; only overdue steps put someone behind.
 const period0 = (stats: HoursStats) => addDays(mondayOf(stats.days[0]?.date ?? TODAY), 7);
 
+// The step without who and when, for a reminder message: "Albin: submit week 44 · due Mon 2 Nov" → "submit week 44".
+const stepAction = (step?: NextStep) => (step ? step.text.replace(/^[^:]+: /, "").replace(/ · .*/, "") : "");
+
 function nextSteps(person: HoursPerson, stats: HoursStats): NextStep[] {
   const first = person.name.split(" ")[0];
   const submitDue = (monday: string) => addDays(monday, 7);
@@ -2874,8 +3023,8 @@ function HoursOverview() {
                   </td>
                   <td className={stats.idle > 5 ? "ho-idle" : ""}>{stats.last ? shortDate(stats.last) : "–"}{stats.idle > 5 && <small className="ho-sub">{stats.idle} working days ago</small>}</td>
                   <td className="ho-actions">
-                    {steps.some((step) => step.who === "consultant" && step.late) && <Button className="text-button" onClick={() => setToast(`Reminder sent to ${person.name}.`)}>Remind</Button>}
-                    {steps.some((step) => step.who === "pm" && step.late) && <Button className="text-button" onClick={() => setToast(`Asked ${person.pm} to approve ${person.name}'s hours.`)}>Nudge PM</Button>}
+                    {steps.some((step) => step.who === "consultant" && step.late) && <Button className="text-button" onClick={() => setToast(`Sent in Teams to ${person.name}: "Reminder: ${stepAction(steps.find((step) => step.who === "consultant"))}."`)}>Remind</Button>}
+                    {steps.some((step) => step.who === "pm" && step.late) && <Button className="text-button" onClick={() => setToast(`Sent in Teams to ${person.pm}: "Please ${stepAction(steps.find((step) => step.who === "pm" && step.late))} for ${person.name}. It's overdue."`)}>Nudge PM</Button>}
                     {month && lock && !unlock && <Button className="text-button" onClick={() => openUnlock(person.id)}>Unlock</Button>}
                   </td>
                 </tr>
@@ -2894,6 +3043,31 @@ function HoursOverview() {
           <span><i className="ho-day ho-day--future" />Not yet</span>
         </div>
       </section>
+
+      {/* What goes out automatically, and to whom, so nobody has to chase people by hand (Henry, 30 Oct). */}
+      {(() => {
+        const consultantsOpen = rows.filter((row) => row.steps.some((step) => step.who === "consultant"));
+        const pmsDue = new Set(rows.filter((row) => row.steps.some((step) => step.who === "pm" && !step.late)).map((row) => row.person.pm));
+        const pmsLate = new Set(rows.filter((row) => row.steps.some((step) => step.who === "pm" && step.late)).map((row) => row.person.pm));
+        const reminders = [
+          { when: "Fri 14:00", channel: "Teams", to: `${plural(consultantsOpen.length, "consultant", "consultants")} with time to log or submit`, text: `Week ${isoWeek(TODAY)} isn't submitted yet. Submit it by ${fmtDay(addDays(mondayOf(TODAY), 7))} so your project manager can approve it.` },
+          { when: "Tue 09:00", channel: "Teams", to: pmsDue.size ? [...pmsDue].join(", ") : "No PM", text: `Hours are waiting for your approval, due ${fmtDay(addDays(mondayOf(TODAY), 9))}. Approve normal weeks in one click and send back what's wrong.` },
+          { when: "Thu 09:00", channel: "Email", to: pmsLate.size ? `${[...pmsLate].join(", ")}, Finance in copy` : "Nobody is late", text: "Some approvals are overdue, so these hours can't be invoiced yet. Please approve today, or name someone who can." },
+        ];
+        return (
+          <section className="panel ho-reminders">
+            <div className="panel-heading">
+              <div><Heading level={2}>Automatic reminders</Heading><p>Sent every week to whoever's turn it is</p></div>
+            </div>
+            {reminders.map((item) => (
+              <div className="ho-reminder" key={item.when}>
+                <small>{item.when} · {item.channel}</small>
+                <span><strong>To {item.to}</strong>"{item.text}"</span>
+              </div>
+            ))}
+          </section>
+        );
+      })()}
 
       <section className="two-col ho-bottom">
         <article className="panel list-panel ho-panel">
@@ -4110,6 +4284,21 @@ export default function App() {
   const [dealId, setDealId] = useState(initialDeals[0].id);
   const [timeEntries, setTimeEntries] = useState(initialTimeEntries);
   const [timeWeek, setTimeWeek] = useState(mondayOf(TODAY));
+  // What the automatic reminders would have sent the signed-in consultant, newest first.
+  const thisWeek = timeEntries.filter((entry) => mondayOf(entry.date) === mondayOf(TODAY));
+  const weekDue = addDays(mondayOf(TODAY), 7);
+  const notices: Notice[] = [
+    ...(thisWeek.some((entry) => entry.status === "draft") || !thisWeek.length
+      ? [{ channel: "Teams" as const, at: `${TODAY}T14:00`, text: `Week ${isoWeek(TODAY)} isn't submitted yet. Submit it by ${fmtDay(weekDue)} so your project manager can approve it.`, page: "time" as Page }]
+      : []),
+    ...timeEntries
+      .filter((entry) => entry.status === "rejected")
+      .map((entry) => {
+        const sentBack = entryHistory(entry).find((event) => event.text.startsWith("Sent back"));
+        return { channel: "Teams" as const, at: sentBack?.at ?? entry.date, text: `${sentBack?.by ?? "Your PM"} sent back ${fmtDay(entry.date)}: ${entry.pmComment ?? ""}`, page: "time" as Page };
+      }),
+    { channel: "Email" as const, at: `${addDays(monthDeadline(monthOf(TODAY)), -4)}T08:00`, text: `${monthName(monthOf(TODAY))} closes ${fmtDay(monthDeadline(monthOf(TODAY)))}. After that, changes go through Finance.`, page: "summary" as Page },
+  ].sort((a, b) => b.at.localeCompare(a.at));
   const [changeRequests, setChangeRequests] = useState<ChangeRequest[]>([]);
   const timeData: TimeData = {
     entries: timeEntries,
@@ -4161,7 +4350,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar onChange={setPage} onClose={() => setMenuOpen(false)} open={menuOpen} page={page} />
       <main className="main">
-        <Topbar onMenu={() => setMenuOpen(true)} page={page} />
+        <Topbar notices={notices} onMenu={() => setMenuOpen(true)} onOpen={setPage} page={page} />
         <div className="content">{content}</div>
       </main>
     </div>
