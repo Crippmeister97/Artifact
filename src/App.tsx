@@ -2327,6 +2327,8 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
 // Made-up people whose patterns mirror Dynamics on 29 Oct 2026: most hours arrive in a batch,
 // vacation is often not logged, part-timers look short against 40 h, some hours wait weeks
 // for PM approval, and a few people add time after the month is closed.
+// October on the 30th is tuned to an average month in Dynamics (Nov 2025–Sep 2026): about 92% of the hours in,
+// most people done, a couple missing the last week, one with an unlogged week, one who hasn't reported at all yet.
 
 type HoursKind = "client" | "internal" | "absence";
 type HoursStatus = "draft" | "submitted" | "approved";
@@ -2363,7 +2365,7 @@ const hoursPeople: HoursPerson[] = [
   { id: "on", name: "Oliver Nyström", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "daily" },
   { id: "vl", name: "Viktor Larsson", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly" },
   { id: "sa", name: "Sara Ahmed", role: "Consultant", unit: "SE", pm: "Mikael K.", days: [0, 1, 2, 3], perDay: 8, habit: "daily" },
-  { id: "mk", name: "Maja Karlsson", role: "Senior consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "monthly" },
+  { id: "mk", name: "Maja Karlsson", role: "Senior consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly" },
   { id: "nb", name: "Noah Berg", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", vacation: [["2026-10-12", "2026-10-16"]] },
   { id: "eh", name: "Elias Holm", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "daily", gaps: [["2026-09-28", "2026-09-30"]], late: [{ from: "2026-09-28", to: "2026-09-30", created: "2026-10-06" }] },
   { id: "al", name: "Alva Lindqvist", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", gaps: [["2026-10-05", "2026-10-09"]] },
@@ -2371,10 +2373,10 @@ const hoursPeople: HoursPerson[] = [
   { id: "eb", name: "Ella Bergström", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 4, habit: "daily" },
   { id: "le", name: "Liam Ekström", role: "Consultant", unit: "IT", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", drafts: true },
   { id: "ws", name: "Wilma Sjöberg", role: "Business developer", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "daily", internal: 8 },
-  { id: "lf", name: "Lucas Forsberg", role: "Consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly", inactiveFrom: "2026-10-16" },
+  { id: "lf", name: "Lucas Forsberg", role: "Consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly", inactiveFrom: "2026-10-26" },
   { id: "se", name: "Saga Engström", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "daily", internal: 1 },
   { id: "ad", name: "Adam Lund", role: "Senior consultant", unit: "US", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "monthly" },
-  { id: "fn", name: "Freja Nordin", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly", short: 1 },
+  { id: "fn", name: "Freja Nordin", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly" },
   { id: "lh", name: "Leo Hedlund", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "daily", sick: [["2026-10-20", "2026-10-21"]] },
   { id: "aw", name: "Alice Wikström", role: "Consultant", unit: "AE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", pending: true },
   { id: "od", name: "Oscar Dahl", role: "Consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "daily" },
@@ -2383,7 +2385,7 @@ const hoursPeople: HoursPerson[] = [
   { id: "nf", name: "Nora Fransson", role: "Project manager", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly", internal: 2 },
   { id: "as", name: "Albin Strand", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly", gaps: [["2026-09-14", "2026-09-18"]], late: [{ from: "2026-09-14", to: "2026-09-18", created: "2026-10-14" }] },
   { id: "ta", name: "Tilde Axelsson", role: "Consultant", unit: "SE", pm: "Sofia L.", days: [0, 1, 2, 3], perDay: 8, habit: "daily" },
-  { id: "me", name: "Melvin Ek", role: "Senior consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "monthly", vacation: [["2026-09-07", "2026-09-11"]] },
+  { id: "me", name: "Melvin Ek", role: "Senior consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly", vacation: [["2026-09-07", "2026-09-11"]], late: [{ from: "2026-10-26", to: "2026-10-30", created: "2026-11-02" }] },
 ];
 
 const inRanges = (date: string, ranges: [string, string][] = []) => ranges.some(([from, to]) => date >= from && date <= to);
@@ -2465,8 +2467,12 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
     }
     expected += person.perDay;
     const state: DayState = onDay.some((entry) => entry.kind === "absence") ? "absence" : hours >= person.perDay ? "full" : hours > 0 ? "partial" : "none";
-    run = state === "none" ? run + 1 : 0;
-    longestGap = Math.max(longestGap, run);
+    // A gap is empty days between reported days. Empty days at the end are just not reported yet.
+    if (state === "none") run++;
+    else {
+      longestGap = Math.max(longestGap, run);
+      run = 0;
+    }
     days.push({ date, state, hours });
   }
   const reported = sum(counted);
