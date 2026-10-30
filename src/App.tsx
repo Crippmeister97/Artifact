@@ -2662,7 +2662,21 @@ type NextStep = { who: "consultant" | "pm"; text: string; late: boolean; hours: 
 // Wednesday after. Anything not due yet is shown, but quietly; only overdue steps put someone behind.
 const period0 = (stats: HoursStats) => addDays(mondayOf(stats.days[0]?.date ?? TODAY), 7);
 
-// Weekdays grouped by week, so the day strip reads as a calendar: one block per week, Monday to Friday.
+// How far a week (or a day) has come for one person, as one word. Missing hours win, then drafts, then the PM.
+function unitStatus(days: HoursStats["days"], perDay: number): { label: string; tone: string; title: string } {
+  const working = days.filter((day) => day.state !== "off");
+  const title = days.map((day) => `${fmtDay(day.date)}: ${day.state === "off" ? "not a working day" : day.state === "future" ? "not yet" : day.state === "absence" ? "away" : `${fmtHours(day.hours)} h${day.status === "draft" ? ", not submitted" : day.status === "submitted" ? ", with the PM" : day.status === "approved" ? ", approved" : ""}`}`).join("\n");
+  if (!working.length) return { label: "", tone: "off", title };
+  if (working.every((day) => day.state === "future")) return { label: "–", tone: "future", title };
+  if (working.every((day) => day.state === "absence")) return { label: "Away", tone: "away", title };
+  const missing = working.filter((day) => day.state === "none" || day.state === "partial").reduce((sum, day) => sum + perDay - day.hours, 0);
+  if (missing > 0) return { label: `−${fmtHours(missing)} h`, tone: "missing", title };
+  if (working.some((day) => day.status === "draft")) return { label: "Draft", tone: "draft", title };
+  if (working.some((day) => day.status === "submitted")) return { label: "With PM", tone: "pm", title };
+  return { label: "✓", tone: "done", title };
+}
+
+// Weekdays grouped by week (Monday to Friday), for the week columns.
 function weekGroups<T extends { date: string }>(days: T[]): [string, T[]][] {
   const groups = new Map<string, T[]>();
   for (const day of days) groups.set(mondayOf(day.date), [...(groups.get(mondayOf(day.date)) ?? []), day]);
@@ -2764,6 +2778,12 @@ function HoursOverview() {
       const by = sort.key === "name" ? 0 : value(a) < value(b) ? -1 : value(a) > value(b) ? 1 : 0;
       return by * sort.dir || a.person.name.localeCompare(b.person.name) * (sort.key === "name" ? sort.dir : 1);
     });
+  // Columns: the weeks of a month, or the days of a week. [key, dates, label]
+  const allDays = rows[0]?.stats.days ?? [];
+  const units: [string, string[], string][] =
+    period.kind === "week"
+      ? allDays.map((day) => [day.date, [day.date], `${dayNames[dayIndex(day.date)].slice(0, 3)} ${Number(day.date.slice(8))}`])
+      : weekGroups(allDays).map(([monday, days]) => [monday, days.map((day) => day.date), `W${isoWeek(monday)}`]);
   const sortBy = (key: HoursSort) => setSort(sort.key === key ? { key, dir: sort.dir === 1 ? -1 : 1 } : { key, dir: key === "name" ? 1 : -1 });
   const sortHead = (key: HoursSort, label: string, className = "") => (
     <th aria-sort={sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : "none"} className={className}>
@@ -2974,18 +2994,10 @@ function HoursOverview() {
             <thead>
               <tr>
                 {sortHead("name", "Person")}
-                <th className="ho-days-head">
-                  {/* The same calendar as the strips below: week numbers for a month, weekdays for a week. */}
-                  <div className={`ho-axis ${period.kind === "week" ? "is-week" : ""}`}>
-                    {weekGroups(rows[0]?.stats.days ?? []).map(([monday, days]) =>
-                      period.kind === "week" ? (
-                        days.map((day) => <span key={day.date}>{dayNames[dayIndex(day.date)].slice(0, 2)}</span>)
-                      ) : (
-                        <span key={monday} style={{ width: `${days.length * 9 - 2}px` }}>{days.length >= 3 ? `W${isoWeek(monday)}` : ""}</span>
-                      ),
-                    )}
-                  </div>
-                </th>
+                {/* One column per week (a month) or per day (a week): the unit people submit and PMs approve. */}
+                {units.map(([key, , label]) => (
+                  <th className="ho-unit-head" key={key}>{label}</th>
+                ))}
                 {sortHead("submitted", "Submitted")}
                 <th>Next step</th>
                 {sortHead("last", "Last time")}
@@ -2993,7 +3005,7 @@ function HoursOverview() {
               </tr>
             </thead>
             <tbody>
-              {!visible.length && <tr><td className="tw-empty" colSpan={6}>Nobody matches this filter.</td></tr>}
+              {!visible.length && <tr><td className="tw-empty" colSpan={5 + units.length}>Nobody matches this filter.</td></tr>}
               {visible.map(({ person, stats, steps, unlock }) => (
                 <tr key={person.id}>
                   <td>
@@ -3005,17 +3017,14 @@ function HoursOverview() {
                       </span>
                     </span>
                   </td>
-                  <td>
-                    <div className={`ho-days ${period.kind === "week" ? "is-week" : ""}`}>
-                      {weekGroups(stats.days).map(([monday, days]) => (
-                        <span className="ho-week" key={monday}>
-                      {days.map((day) => (
-                        <i className={`ho-day ho-day--${day.state} ${day.status && day.state !== "absence" ? `is-${day.status}` : ""}`} key={day.date} title={`${fmtDay(day.date)}: ${day.state === "off" ? "not a working day" : day.state === "future" ? `not yet${day.hours ? ` (${fmtHours(day.hours)} h so far)` : ""}` : day.state === "absence" ? "vacation or absence" : `${fmtHours(day.hours)} h${day.status === "draft" ? ", not submitted" : day.status === "submitted" ? ", with the PM" : day.status === "approved" ? ", approved" : ""}`}`} />
-                      ))}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
+                  {units.map(([key, dates]) => {
+                    const unit = unitStatus(stats.days.filter((day) => dates.includes(day.date)), person.perDay);
+                    return (
+                      <td className="ho-unit" key={key} title={unit.title}>
+                        <span className={`ho-unit-chip is-${unit.tone}`}>{unit.label}</span>
+                      </td>
+                    );
+                  })}
                   <td>
                     {/* Drafts haven't left the consultant's desk, so only submitted time counts. */}
                     <div className="ho-progress-head">
@@ -3054,14 +3063,12 @@ function HoursOverview() {
           </table>
         </div>
         <div className="ho-legend">
-          <span><i className="ho-day ho-day--full is-approved" />Approved</span>
-          <span><i className="ho-day ho-day--full is-submitted" />With the PM</span>
-          <span><i className="ho-day ho-day--full is-draft" />Not submitted</span>
-          <span><i className="ho-day ho-day--partial is-approved" />Part of the day</span>
-          <span><i className="ho-day ho-day--none" />No time</span>
-          <span><i className="ho-day ho-day--absence" />Vacation or absence</span>
-          <span><i className="ho-day ho-day--off" />Not a working day</span>
-          <span><i className="ho-day ho-day--future" />Not yet</span>
+          <span><b className="ho-unit-chip is-done">✓</b>Approved</span>
+          <span><b className="ho-unit-chip is-pm">With PM</b>Submitted, waiting for approval</span>
+          <span><b className="ho-unit-chip is-draft">Draft</b>Logged, not submitted</span>
+          <span><b className="ho-unit-chip is-missing">−8 h</b>Hours missing</span>
+          <span><b className="ho-unit-chip is-away">Away</b>Vacation or absence</span>
+          <span><b className="ho-unit-chip is-future">–</b>Not yet</span>
         </div>
       </section>
 
