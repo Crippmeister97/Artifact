@@ -1310,3 +1310,24 @@ button.mini-row > .icon { color: var(--muted); }
 .ar-row i { color: #b5b1a4; font-style: normal; font-size: 18px; }
 .ar-back { margin-top: 4px; padding: 0; font-size: 12px; }
 .ar-empty { margin: 0; padding: 14px 16px; }
+
+/* Month summary: Finance sends it, each PM confirms (Hours overview and Approvals). */
+.ho-summaries { margin-bottom: 18px; padding: 20px 24px; }
+.ho-summary-hint { margin: 6px 0 0; }
+.ho-summary { padding: 12px 0; border-top: 1px solid var(--hair, #ebe8df); display: grid; grid-template-columns: 32px 1fr auto 210px; gap: 14px; align-items: center; }
+.ho-summary:first-of-type { margin-top: 12px; }
+.ho-summary-hours { display: grid; justify-items: end; gap: 2px; font-size: 12px; }
+.ho-summary-hours .is-late, .ap-summary .is-late { color: var(--red); font-size: 11px; }
+.ho-summary-state { color: var(--quiet, var(--muted)); font-size: 12px; text-align: right; }
+.ho-summary-state.is-sent { color: #8a6d2f; }
+.ho-summary-state.is-done { color: var(--green); }
+.ap-summary { margin-bottom: 18px; padding: 20px 24px; display: grid; gap: 12px; border-color: #d8cdb0; background: #fdfbf6; }
+.ap-summary small { color: #a19d90; font-size: 11px; }
+.ap-summary h2 { margin: 2px 0; }
+.ap-summary p { margin: 0; color: var(--quiet, var(--muted)); font-size: 12px; }
+.ap-summary-table { width: 100%; max-width: 520px; border-collapse: collapse; font-size: 13px; }
+.ap-summary-table td { height: auto; padding: 7px 0; border-bottom: 1px solid var(--hair, #ebe8df); }
+.ap-summary-table td.r { text-align: right; }
+.ap-summary-table tfoot td { font-weight: 600; border-bottom: 0; }
+.ap-summary .primary-button { justify-self: start; }
+.ap-confirmed { margin-bottom: 14px; }

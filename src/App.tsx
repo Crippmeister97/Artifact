@@ -2796,7 +2796,17 @@ function PmQueueRow({ pm, group, onNudge, className }: { pm: string; group: Retu
   );
 }
 
-function HoursOverview({ hours, onAddHours }: { hours: HoursEntry[]; onAddHours: (entries: HoursEntry[]) => void }) {
+function HoursOverview({
+  hours,
+  onAddHours,
+  summaries,
+  onSend,
+}: {
+  hours: HoursEntry[];
+  onAddHours: (entries: HoursEntry[]) => void;
+  summaries: Record<string, MonthSummary>;
+  onSend: (month: string, pms: string[]) => void;
+}) {
   const [periodKey, setPeriodKey] = useState("2026-10");
   const [filter, setFilter] = useState<HoursFilter>("all");
   const [query, setQuery] = useState("");
@@ -3357,6 +3367,59 @@ function HoursOverview({ hours, onAddHours }: { hours: HoursEntry[]; onAddHours:
         );
       })()}
 
+      {month && (
+        // Month close: Finance sends each PM the month to confirm (Mats in cc); confirmed means ready to invoice.
+        <section className="panel ho-summaries">
+          {(() => {
+            const items = projectManagers.map((pm) => ({ pm, summary: pmSummary(pm, month, hours), status: summaries[`${month}|${pm}`] }));
+            const unsent = items.filter((item) => !item.status).map((item) => item.pm);
+            const confirmed = items.filter((item) => item.status?.confirmedAt).length;
+            return (
+              <>
+                <div className="panel-heading">
+                  <div>
+                    <Heading level={2}>Month summary to project managers</Heading>
+                    <p>
+                      {confirmed === items.length
+                        ? `All ${items.length} project managers have confirmed ${monthName(month)}. Ready to invoice.`
+                        : `${confirmed} of ${items.length} confirmed. Each PM confirms their team's approved hours before invoicing, with Mats in cc.`}
+                    </p>
+                  </div>
+                  {unsent.length > 0 && (
+                    <Button
+                      className="secondary-button"
+                      onClick={() => {
+                        onSend(month, unsent);
+                        setToast(`Sent the ${monthName(month)} summary to ${unsent.join(", ")}, Mats in cc.`);
+                      }}
+                    >
+                      Send to {unsent.length === items.length ? "all PMs" : plural(unsent.length, "PM", "PMs")}
+                    </Button>
+                  )}
+                </div>
+                {current && unsent.length > 0 && <p className="tw-hint ho-summary-hint">Usually sent on {fmtDay(monthDeadline(month))}, when the month is in. You can send it earlier.</p>}
+                {items.map(({ pm, summary, status }) => (
+                  <div className="ho-summary" key={pm}>
+                    <Avatar name={pm} size="small" />
+                    <span className="case-cell">
+                      <strong>{pm}</strong>
+                      <small>{plural(summary.people, "person", "people")} · {summary.projects.map(([name, item]) => `${name} ${fmtHours(item.approved)} h`).join(" · ") || "no client time"}</small>
+                    </span>
+                    <span className="ho-summary-hours">
+                      <b>{fmtHours(summary.approved)} h approved</b>
+                      {summary.waiting > 0 && <small className="is-late">{fmtHours(summary.waiting)} h still waiting</small>}
+                    </span>
+                    <span className={`ho-summary-state ${status?.confirmedAt ? "is-done" : status ? "is-sent" : ""}`}>
+                      {status?.confirmedAt ? `✓ Confirmed ${fmtWhen(status.confirmedAt)}` : status ? `Sent ${fmtWhen(status.sentAt)} · waiting` : "Not sent"}
+                    </span>
+                  </div>
+                ))}
+              </>
+            );
+          })()}
+        </section>
+      )}
+
       <section className="two-col ho-bottom">
         <article className="panel list-panel ho-panel">
           <div className="panel-heading">
@@ -3567,7 +3630,7 @@ const overtimeForPayroll = [
 ];
 const kr = (value: number) => `${Math.round(value).toLocaleString("sv-SE")} kr`;
 
-function FinanceDashboard({ onOpen, hours }: { onOpen: (page: Page) => void; hours: HoursEntry[] }) {
+function FinanceDashboard({ onOpen, hours, summaries }: { onOpen: (page: Page) => void; hours: HoursEntry[]; summaries: Record<string, MonthSummary> }) {
   const [month, setMonth] = useState("2026-10");
   const [toast, setToast] = useState("");
 
@@ -3639,7 +3702,10 @@ function FinanceDashboard({ onOpen, hours }: { onOpen: (page: Page) => void; hou
             </div>
             <div>
               <h2 className="tw-display">Month close · {monthTitle(month)}</h2>
-              <p className="tw-subtle">{locked ? `Locked since ${fmtDay(addDays(deadline, 1))}` : `Locks automatically after ${fmtDay(deadline)} · ${plural(daysLeft, "day", "days")} left`}</p>
+              <p className="tw-subtle">
+                {locked ? `Locked since ${fmtDay(addDays(deadline, 1))}` : `Locks automatically after ${fmtDay(deadline)} · ${plural(daysLeft, "day", "days")} left`}
+                {` · ${projectManagers.filter((pm) => summaries[`${month}|${pm}`]?.confirmedAt).length} of ${projectManagers.length} PMs confirmed`}
+              </p>
             </div>
           </div>
           <div className="tw-figure">
@@ -4190,6 +4256,30 @@ function doneStatus(item: ApprovalItem): { label: string; tone: string } {
   return item.lines.some((line) => line.status === "sent_back") ? { label: "Changes requested", tone: "amber" } : { label: "Approved", tone: "green" };
 }
 
+// The month summary Finance sends each PM to confirm before invoicing, with Mats in cc (Nellie, 30 Oct). Today it's an
+// email outside the system; here it's a step in it. Keyed "month|pm".
+type MonthSummary = { sentAt: string; confirmedAt?: string };
+const projectManagers = [...new Set(hoursPeople.map((person) => person.pm))].sort();
+const initialSummaries: Record<string, MonthSummary> = Object.fromEntries(
+  projectManagers.map((pm) => [`2026-09|${pm}`, { sentAt: "2026-10-02T09:00", confirmedAt: "2026-10-05T11:30" }]),
+);
+
+// A PM's team for one month: approved client hours per project, and what is still waiting or not submitted.
+function pmSummary(pm: string, month: string, entries: HoursEntry[]) {
+  const team = hoursPeople.filter((person) => person.pm === pm);
+  const lines = entries.filter((entry) => monthOf(entry.date) === month && entry.kind === "client" && team.some((person) => person.id === entry.person));
+  const projects = new Map<string, { approved: number; waiting: number }>();
+  for (const entry of lines) {
+    const name = projectFor(entry.person).name;
+    const item = projects.get(name) ?? { approved: 0, waiting: 0 };
+    if (entry.status === "approved") item.approved += entry.hours;
+    else if (entry.status === "submitted") item.waiting += entry.hours;
+    projects.set(name, item);
+  }
+  const sum = (status: HoursEntry["status"][]) => lines.filter((entry) => status.includes(entry.status)).reduce((total, entry) => total + entry.hours, 0);
+  return { people: team.length, projects: [...projects.entries()].filter(([, item]) => item.approved + item.waiting > 0).sort((a, b) => b[1].approved - a[1].approved), approved: sum(["approved"]), waiting: sum(["submitted"]), open: sum(["draft", "rejected"]) };
+}
+
 // Timesheets for Philip's team, built from the shared hours, one per person and week that has anything submitted. Philip's
 // own time isn't here: nobody approves their own hours.
 function teamSheets(entries: HoursEntry[]): ApprovalItem[] {
@@ -4238,7 +4328,17 @@ function teamSheets(entries: HoursEntry[]): ApprovalItem[] {
   return sheets;
 }
 
-function Approvals({ entries, setEntries }: { entries: HoursEntry[]; setEntries: (entries: HoursEntry[]) => void }) {
+function Approvals({
+  entries,
+  setEntries,
+  summaries,
+  onConfirm,
+}: {
+  entries: HoursEntry[];
+  setEntries: (entries: HoursEntry[]) => void;
+  summaries: Record<string, MonthSummary>;
+  onConfirm: (month: string, pm: string) => void;
+}) {
   // Timesheets come from the shared hours; expenses and absence requests stay as the demo had them.
   const [others, setOthers] = useState<ApprovalItem[]>(() => initialApprovals.filter((item) => !item.lines));
   const items = [...teamSheets(entries), ...others];
@@ -4378,8 +4478,49 @@ function Approvals({ entries, setEntries }: { entries: HoursEntry[]; setEntries:
     return due < TODAY ? `${plural(Math.max(1, workdaysBetween(due, TODAY)), "day", "days")} late` : `due ${fmtDay(due)}`;
   };
 
+  // The month summary Finance sent Philip, if any is waiting for his confirmation.
+  const toConfirm = Object.entries(summaries)
+    .filter(([key, item]) => key.endsWith(`|${ME.pm}`) && !item.confirmedAt)
+    .map(([key, item]) => ({ month: key.split("|")[0], item }));
+  const confirmedLately = Object.entries(summaries).filter(([key, item]) => key.endsWith(`|${ME.pm}`) && item.confirmedAt && item.confirmedAt.startsWith(TODAY));
+
   return (
     <>
+      {toConfirm.map(({ month, item }) => {
+        const summary = pmSummary(ME.pm, month, entries);
+        return (
+          <section className="panel ap-summary" key={month}>
+            <div>
+              <small>From Finance · {fmtWhen(item.sentAt)} · Mats in cc</small>
+              <Heading level={2}>Confirm {monthName(month)} for invoicing</Heading>
+              <p>Your team's approved client hours. Once you confirm, Finance invoices them.</p>
+            </div>
+            <table className="ap-summary-table">
+              <tbody>
+                {summary.projects.map(([name, project]) => (
+                  <tr key={name}>
+                    <td>{name}</td>
+                    <td className="r">{fmtHours(project.approved)} h</td>
+                    <td className="r">{project.waiting ? <span className="is-late">{fmtHours(project.waiting)} h waiting</span> : "✓"}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr><td>Total</td><td className="r">{fmtHours(summary.approved)} h</td><td /></tr>
+              </tfoot>
+            </table>
+            {summary.waiting > 0 ? (
+              <p className="tw-msg tw-msg--warn">Approve or send back the {fmtHours(summary.waiting)} h still waiting first, so the summary is complete.</p>
+            ) : summary.open > 0 ? (
+              <p className="tw-hint">{fmtHours(summary.open)} h are still with consultants (not submitted or sent back). They follow next month if they come in late.</p>
+            ) : null}
+            <Button className="primary-button compact" disabled={summary.waiting > 0} onClick={() => onConfirm(month, ME.pm)}>Confirm {monthName(month)}</Button>
+          </section>
+        );
+      })}
+      {confirmedLately.length > 0 && !toConfirm.length && (
+        <p className="tw-msg tw-msg--info ap-confirmed">✓ You confirmed {confirmedLately.map(([key]) => monthName(key.split("|")[0])).join(", ")} today. Finance can invoice it.</p>
+      )}
       <section className="stat-grid stat-grid--three">
         <StatCard accent="amber" change={lateSheets.length ? `${lateSheets.length} overdue` : "none overdue"} icon="bell" label="Waiting for you" note="timesheets, expenses and absence" value={String(waiting.length)} />
         <StatCard accent="sand" change={`${fmt1(sumHours(submittedLines.filter((line) => line.billable)))} h billable`} icon="clock" label="Hours to approve" note="submitted, not approved" value={`${fmt1(sumHours(submittedLines))} h`} />
@@ -5240,6 +5381,9 @@ export default function App() {
   const [timeEntries, setTimeEntries] = useState(initialTimeEntries);
   // Everyone else's time. Philip's own comes from Time entries, so one submit shows up everywhere.
   const [teamHours, setTeamHours] = useState(hoursEntries);
+  const [summaries, setSummaries] = useState(initialSummaries);
+  const sendSummaries = (month: string, pms: string[]) => setSummaries({ ...summaries, ...Object.fromEntries(pms.map((pm) => [`${month}|${pm}`, { sentAt: nowAt() }])) });
+  const confirmSummary = (month: string, pm: string) => setSummaries({ ...summaries, [`${month}|${pm}`]: { ...summaries[`${month}|${pm}`], confirmedAt: nowAt() } });
   const allHours = [...teamHours, ...myHours(timeEntries)];
   const approvalsWaiting = teamSheets(teamHours).filter((item) => item.lines?.some((line) => line.status === "submitted")).length;
   const [timeWeek, setTimeWeek] = useState(mondayOf(TODAY));
@@ -5296,9 +5440,9 @@ export default function App() {
         }}
       />
     );
-  else if (page === "approvals") content = <Approvals entries={teamHours} setEntries={setTeamHours} />;
-  else if (page === "hours") content = <HoursOverview hours={allHours} onAddHours={(added) => setTeamHours([...teamHours, ...added])} />;
-  else if (page === "finance") content = <FinanceDashboard hours={allHours} onOpen={setPage} />;
+  else if (page === "approvals") content = <Approvals entries={teamHours} onConfirm={confirmSummary} setEntries={setTeamHours} summaries={summaries} />;
+  else if (page === "hours") content = <HoursOverview hours={allHours} onAddHours={(added) => setTeamHours([...teamHours, ...added])} onSend={sendSummaries} summaries={summaries} />;
+  else if (page === "finance") content = <FinanceDashboard hours={allHours} onOpen={setPage} summaries={summaries} />;
   else if (page === "accounts") content = <Accounts deals={deals} onOpenDeal={openDeal} />;
   else if (page === "contacts") content = <Contacts />;
   else if (page === "leads") content = <Leads />;
