@@ -3458,26 +3458,293 @@ function TimeSummary({ entries, weekStart, setWeekStart, requests, onRequest, on
   );
 }
 
-const approvalItems = [
-  { id: 1, type: "Timesheets", name: "Oliver Nyström", initials: "ON", title: "Week 24 timesheet", detail: "38.5 h · 36.0 h billable", project: "Nova implementation", age: "2 h ago" },
-  { id: 2, type: "Timesheets", name: "Viktor Larsson", initials: "VL", title: "Week 24 timesheet", detail: "40.0 h · 34.0 h billable", project: "Digital platform 2.0", age: "5 h ago" },
-  { id: 3, type: "Timesheets", name: "Sara Ahmed", initials: "SA", title: "Week 24 timesheet", detail: "31.5 h · 22.0 h billable", project: "Service portal", age: "1 d ago", flag: "Below 40 h target" },
-  { id: 4, type: "Expenses", name: "Maja Karlsson", initials: "MK", title: "Train Stockholm–Gothenburg", detail: "SEK 1,240 · receipt attached", project: "CRM migration", age: "3 h ago" },
-  { id: 5, type: "Expenses", name: "Oliver Nyström", initials: "ON", title: "Client dinner, Nordic Solutions", detail: "SEK 3,860 · receipt attached", project: "Nordic Solutions pursuit", age: "1 d ago", flag: "Above SEK 3,000 policy" },
-  { id: 6, type: "Absence", name: "Noah Berg", initials: "NB", title: "Vacation, Jul 8 – 19", detail: "10 working days", project: "Service desk", age: "2 d ago" },
+// Approvals (F12). Flow: draft → submitted → approved, or submitted → sent back → consultant fixes → submitted again.
+// The PM approves a whole week in one click, or sends back single lines with a required comment; the rest of the week stays
+// submitted. An approved line can be recalled while its month is open. Once the month is locked the PM asks Finance instead
+// (the rules on main say only Finance reopens an approved entry; Henry wants PMs to be able to, before the lock).
+type LineStatus = "submitted" | "approved" | "sent_back";
+type ApprovalLine = {
+  id: number;
+  date: string;
+  what: string;
+  hours: number;
+  billable: boolean;
+  note?: string;
+  status: LineStatus;
+  comment?: string;
+  recalled?: boolean;
+  financeRequest?: string;
+};
+type Decision = { status: "Approved" | "Rejected" | "Changes requested"; note?: string };
+type ApprovalItem = {
+  id: number;
+  type: string;
+  name: string;
+  initials: string;
+  title: string;
+  detail: string;
+  project: string;
+  age: string;
+  week: string;
+  flag?: string;
+  lines?: ApprovalLine[];
+  facts?: [string, string][];
+  decision?: Decision;
+};
+
+let approvalLineId = 100;
+const ln = (date: string, what: string, hours: number, billable: boolean, note?: string, status: LineStatus = "submitted", extra: Partial<ApprovalLine> = {}): ApprovalLine => ({
+  id: ++approvalLineId,
+  date,
+  what,
+  hours,
+  billable,
+  note,
+  status,
+  ...extra,
+});
+const NOVA = "Nova implementation · Client work";
+const DIGITAL = "Digital platform 2.0 · Client work";
+const PORTAL = "Service portal · Client work";
+
+const initialApprovals: ApprovalItem[] = [
+  {
+    id: 1, type: "Timesheets", name: "Oliver Nyström", initials: "ON", title: "Week 43 timesheet", detail: "", project: "Nova implementation", age: "5 d ago", week: "2026-10-19",
+    lines: [
+      ln("2026-10-19", NOVA, 8, true, "Data mapping workshop"),
+      ln("2026-10-20", NOVA, 8, true, "Integration build"),
+      ln("2026-10-21", NOVA, 8, true, "Integration build"),
+      ln("2026-10-22", NOVA, 8, true, "UAT preparation"),
+      ln("2026-10-23", NOVA, 4, true, "UAT with the customer"),
+      ln("2026-10-23", "Internal development", 2.5, false, "Azure certification, module 3"),
+    ],
+  },
+  {
+    id: 2, type: "Timesheets", name: "Viktor Larsson", initials: "VL", title: "Week 43 timesheet", detail: "", project: "Digital platform 2.0", age: "5 d ago", week: "2026-10-19",
+    lines: [
+      ln("2026-10-19", DIGITAL, 8, true, "Checkout redesign"),
+      ln("2026-10-20", DIGITAL, 8, true, "Checkout redesign"),
+      ln("2026-10-21", DIGITAL, 8, true, "Payment provider integration"),
+      ln("2026-10-22", DIGITAL, 8, true, "Payment provider integration"),
+      ln("2026-10-23", DIGITAL, 2, true, "Release notes"),
+      ln("2026-10-23", "Internal development", 6, false, "Sprint planning and retro"),
+    ],
+  },
+  {
+    id: 3, type: "Timesheets", name: "Sara Ahmed", initials: "SA", title: "Week 43 timesheet", detail: "", project: "Service portal", age: "6 d ago", week: "2026-10-19", flag: "Below 40 h target",
+    lines: [
+      ln("2026-10-19", PORTAL, 8, true, "Accessibility fixes"),
+      ln("2026-10-20", PORTAL, 8, true, "Accessibility fixes"),
+      ln("2026-10-21", PORTAL, 6, true, "Handover documentation", "sent_back", { comment: "Customer text missing. Add what was delivered." }),
+      ln("2026-10-22", "Presales support", 4, false, "Proposal for Forma Studio"),
+      ln("2026-10-22", "Internal development", 1.5, false),
+      ln("2026-10-23", "Internal development", 4, false, "Component library cleanup"),
+    ],
+  },
+  {
+    id: 4, type: "Timesheets", name: "Viktor Larsson", initials: "VL", title: "Week 44 timesheet", detail: "", project: "Digital platform 2.0", age: "1 h ago", week: "2026-10-26",
+    lines: [
+      ln("2026-10-26", DIGITAL, 8, true, "Order history"),
+      ln("2026-10-27", DIGITAL, 8, true, "Order history"),
+      ln("2026-10-28", DIGITAL, 8, true, "Refund flow"),
+      ln("2026-10-29", DIGITAL, 8, true, "Refund flow"),
+    ],
+  },
+  {
+    id: 5, type: "Timesheets", name: "Oliver Nyström", initials: "ON", title: "Week 42 timesheet", detail: "", project: "Nova implementation", age: "12 d ago", week: "2026-10-12",
+    lines: [
+      ln("2026-10-12", NOVA, 8, true, "Environment setup", "approved"),
+      ln("2026-10-13", NOVA, 8, true, "Environment setup", "approved"),
+      ln("2026-10-14", NOVA, 8, true, "Data migration", "approved"),
+      ln("2026-10-15", NOVA, 8, true, "Data migration", "approved"),
+      ln("2026-10-16", NOVA, 6, true, "Test data", "approved"),
+      ln("2026-10-16", "Internal development", 2, false, "Code review", "approved"),
+    ],
+  },
+  {
+    id: 6, type: "Timesheets", name: "Sara Ahmed", initials: "SA", title: "Week 40 timesheet", detail: "", project: "Service portal", age: "4 w ago", week: "2026-09-28",
+    lines: [
+      ln("2026-09-28", PORTAL, 8, true, "Design review", "approved"),
+      ln("2026-09-29", PORTAL, 8, true, "Design review", "approved"),
+      ln("2026-09-30", PORTAL, 8, true, "Search page", "approved"),
+      ln("2026-10-01", PORTAL, 8, true, "Search page", "approved"),
+      ln("2026-10-02", PORTAL, 8, true, "Bug fixing", "approved"),
+    ],
+  },
+  {
+    id: 7, type: "Expenses", name: "Maja Karlsson", initials: "MK", title: "Train Stockholm–Gothenburg", detail: "SEK 1,240 · receipt attached", project: "CRM migration", age: "3 h ago", week: "2026-10-19",
+    facts: [["Amount", "SEK 1,240"], ["Date", "Tue 20 Oct"], ["Category", "Travel, train"], ["Receipt", "Attached"], ["Project", "CRM migration"]],
+  },
+  {
+    id: 8, type: "Expenses", name: "Oliver Nyström", initials: "ON", title: "Client dinner, Nordic Solutions", detail: "SEK 3,860 · receipt attached", project: "Nordic Solutions pursuit", age: "1 d ago", week: "2026-10-19", flag: "Above SEK 3,000 policy",
+    facts: [["Amount", "SEK 3,860"], ["Date", "Wed 21 Oct"], ["Category", "Client entertainment"], ["Receipt", "Attached"], ["Project", "Nordic Solutions pursuit"]],
+  },
+  {
+    id: 9, type: "Absence", name: "Noah Berg", initials: "NB", title: "Vacation, 9 – 20 Nov", detail: "10 working days", project: "Service desk", age: "2 d ago", week: "2026-10-26",
+    facts: [["From", "Mon 9 Nov"], ["To", "Fri 20 Nov"], ["Working days", "10"], ["Project", "Service desk"]],
+  },
 ];
 
+const fmt1 = (hours: number) => hours.toFixed(1);
+const weekLabel = (monday: string) => `Week ${isoWeek(monday)} · ${toDate(monday).getUTCDate()}–${shortDate(addDays(monday, 6))}`;
+// PMs approve a week by the Wednesday after it (same rule as Hours overview).
+const approveDueOf = (monday: string) => addDays(monday, 9);
+const sumHours = (list: ApprovalLine[]) => list.reduce((total, line) => total + line.hours, 0);
+const isWaiting = (item: ApprovalItem) => (item.lines ? item.lines.some((line) => line.status === "submitted") : !item.decision);
+
+// What the manager needs at a glance: totals, billable share, and which days are filled or short.
+function sheetSummary(item: ApprovalItem) {
+  const lines = item.lines ?? [];
+  const days = weekDates(item.week).slice(0, 5).map((date) => ({ date, hours: sumHours(lines.filter((line) => line.date === date)) }));
+  return {
+    total: sumHours(lines),
+    billable: sumHours(lines.filter((line) => line.billable)),
+    days,
+    empty: days.filter((day) => day.hours === 0).length,
+    short: days.filter((day) => day.hours > 0 && day.hours < 8).length,
+    sentBack: lines.filter((line) => line.status === "sent_back").length,
+    approved: lines.filter((line) => line.status === "approved").length,
+  };
+}
+
+const decisionTone: Record<Decision["status"], string> = { Approved: "green", Rejected: "red", "Changes requested": "amber" };
+const lineTone: Record<LineStatus, string> = { submitted: "sand", approved: "green", sent_back: "amber" };
+const lineLabel: Record<LineStatus, string> = { submitted: "Submitted", approved: "Approved", sent_back: "Sent back" };
+
+// The badge on a row that has nothing left to decide.
+function doneStatus(item: ApprovalItem): { label: string; tone: string } {
+  if (!item.lines) return item.decision ? { label: item.decision.status, tone: decisionTone[item.decision.status] } : { label: "Waiting", tone: "sand" };
+  return item.lines.some((line) => line.status === "sent_back") ? { label: "Changes requested", tone: "amber" } : { label: "Approved", tone: "green" };
+}
+
 function Approvals() {
+  const [items, setItems] = useState<ApprovalItem[]>(initialApprovals);
   const [tab, setTab] = useState("All");
-  const [decided, setDecided] = useState<Record<number, "Approved" | "Rejected">>({});
+  const [week, setWeek] = useState("all");
+  const [status, setStatus] = useState("all");
+  const [review, setReview] = useState<{ id: number; mode: "view" | "reject" | "changes" } | null>(null);
+  // Comments typed on single lines; a line is "open for a comment" while it has an entry here.
+  const [open, setOpen] = useState<Record<number, string>>({});
+  const [note, setNote] = useState("");
+  const [noteError, setNoteError] = useState("");
   const tabs = ["All", "Timesheets", "Expenses", "Absence"];
-  const visible = approvalItems.filter((item) => tab === "All" || item.type === tab);
-  const pending = approvalItems.filter((item) => !decided[item.id]).length;
+
+  const weeks = [...new Set(items.map((item) => item.week))].sort().reverse();
+  const inWeek = items.filter((item) => week === "all" || item.week === week);
+  const visible = inWeek
+    .filter((item) => tab === "All" || item.type === tab)
+    .filter((item) => status === "all" || (status === "waiting" ? isWaiting(item) : !isWaiting(item) && doneStatus(item).label === (status === "approved" ? "Approved" : "Changes requested")))
+    .sort((a, b) => b.week.localeCompare(a.week));
+  const waiting = items.filter(isWaiting);
+  const waitingSheets = waiting.filter((item) => item.lines);
+  const lateSheets = waitingSheets.filter((item) => approveDueOf(item.week) < TODAY);
+  const submittedLines = waitingSheets.flatMap((item) => item.lines!.filter((line) => line.status === "submitted"));
+  const current = review ? items.find((item) => item.id === review.id) : undefined;
+
+  const patch = (id: number, change: (item: ApprovalItem) => ApprovalItem) => setItems((list) => list.map((item) => (item.id === id ? change(item) : item)));
+  const patchLine = (item: ApprovalItem, lineId: number, change: (line: ApprovalLine) => ApprovalLine): ApprovalItem => ({
+    ...item,
+    lines: item.lines?.map((line) => (line.id === lineId ? change(line) : line)),
+  });
+  const closeReview = () => {
+    setReview(null);
+    setOpen({});
+  };
+  const openReview = (id: number, mode: "view" | "reject" | "changes" = "view") => {
+    const item = items.find((entry) => entry.id === id);
+    setNote("");
+    setNoteError("");
+    // On a timesheet, "request changes" opens a comment box on every line still waiting; the PM fills in the ones that are wrong.
+    setOpen(item?.lines && mode === "changes" ? Object.fromEntries(item.lines.filter((line) => line.status === "submitted").map((line) => [line.id, ""])) : {});
+    setReview({ id, mode: item?.lines && mode === "changes" ? "view" : mode });
+  };
+
+  const approve = (id: number) => {
+    patch(id, (item) => (item.lines ? { ...item, lines: item.lines.map((line) => (line.status === "submitted" ? { ...line, status: "approved" } : line)) } : { ...item, decision: { status: "Approved" } }));
+    closeReview();
+  };
+  // Approving everything that is waiting is only for timesheets with nothing to look at.
+  const approveClean = () =>
+    setItems((list) =>
+      list.map((item) =>
+        item.lines && !item.flag && visible.includes(item) && !item.lines.some((line) => line.status === "sent_back")
+          ? { ...item, lines: item.lines.map((line) => (line.status === "submitted" ? { ...line, status: "approved" } : line)) }
+          : item,
+      ),
+    );
+  const sendNote = () => {
+    if (!review || !current || review.mode === "view") return;
+    if (note.trim().length < 5) {
+      setNoteError(review.mode === "reject" ? "Say why you're rejecting it, so they know what went wrong." : "Say what needs to change.");
+      return;
+    }
+    const text = note.trim();
+    patch(current.id, (item) =>
+      item.lines
+        ? { ...item, lines: item.lines.map((line) => (line.status === "submitted" ? { ...line, status: "sent_back", comment: text } : line)) }
+        : { ...item, decision: { status: review.mode === "reject" ? "Rejected" : "Changes requested", note: text } },
+    );
+    closeReview();
+  };
+  // Sends back every open line (submitted ones), or recalls approved ones. In a locked month the recall becomes a request to Finance.
+  const sendLines = () => {
+    if (!current) return;
+    const ids = Object.keys(open).map(Number);
+    if (ids.some((id) => open[id].trim().length < 5)) {
+      setNoteError("Write a comment on every line you send back. The consultant sees it.");
+      return;
+    }
+    patch(current.id, (item) => ({
+      ...item,
+      lines: item.lines?.map((line) => {
+        if (open[line.id] === undefined) return line;
+        const text = open[line.id].trim();
+        if (line.status === "approved" && isMonthLocked(monthOf(line.date))) return { ...line, financeRequest: text };
+        return { ...line, status: "sent_back", comment: text, recalled: line.status === "approved" };
+      }),
+    }));
+    setOpen({});
+    setNoteError("");
+  };
+  const undoSendBack = (item: ApprovalItem, line: ApprovalLine) => patch(item.id, () => patchLine(item, line.id, ({ comment, recalled, ...rest }) => ({ ...rest, status: recalled ? "approved" : "submitted" })));
+  // Accidental approval: put approved lines back to submitted (no comment, the consultant is not involved). Locked months need Finance.
+  const canUndo = (item: ApprovalItem) => (item.lines ? item.lines.some((line) => line.status === "approved" && !line.financeRequest && !isMonthLocked(monthOf(line.date))) : !!item.decision);
+  const undoApproval = (id: number) =>
+    patch(id, (item) =>
+      item.lines
+        ? { ...item, lines: item.lines.map((line) => (line.status === "approved" && !isMonthLocked(monthOf(line.date)) ? { ...line, status: "submitted" } : line)) }
+        : { ...item, decision: undefined },
+    );
+  const undoLineApproval = (item: ApprovalItem, line: ApprovalLine) => patch(item.id, () => patchLine(item, line.id, (entry) => ({ ...entry, status: "submitted" })));
+  const undoAllSendBacks = (id: number) =>
+    patch(id, (item) => ({
+      ...item,
+      lines: item.lines?.map(({ comment, ...line }) => (line.status === "sent_back" ? { ...line, status: line.recalled ? "approved" : "submitted", recalled: undefined } : { ...line, comment })),
+    }));
+  const reopenDecision = (id: number) => patch(id, (item) => ({ ...item, decision: undefined }));
+
+  useEffect(() => {
+    if (!review) return;
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && closeReview();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [review]);
+
+  const summaryText = (item: ApprovalItem) => {
+    if (!item.lines) return item.detail;
+    const sheet = sheetSummary(item);
+    return `${fmt1(sheet.total)} h · ${fmt1(sheet.billable)} h billable · ${5 - sheet.empty} of 5 days filled`;
+  };
+  const dueText = (item: ApprovalItem) => {
+    const due = approveDueOf(item.week);
+    return due < TODAY ? `${plural(Math.max(1, workdaysBetween(due, TODAY)), "day", "days")} late` : `due ${fmtDay(due)}`;
+  };
+
   return (
     <>
       <section className="stat-grid stat-grid--three">
-        <StatCard accent="amber" change="+2" icon="bell" label="Waiting for you" note="since yesterday" value={String(pending)} />
-        <StatCard accent="sand" change="92 h billable" icon="clock" label="Hours to approve" note="this week" value="110 h" />
+        <StatCard accent="amber" change={lateSheets.length ? `${lateSheets.length} overdue` : "none overdue"} icon="bell" label="Waiting for you" note="timesheets, expenses and absence" value={String(waiting.length)} />
+        <StatCard accent="sand" change={`${fmt1(sumHours(submittedLines.filter((line) => line.billable)))} h billable`} icon="clock" label="Hours to approve" note="submitted, not approved" value={`${fmt1(sumHours(submittedLines))} h`} />
         <StatCard accent="navy" change="2 receipts" icon="sales" label="Expenses to approve" note="attached" value="SEK 5,100" />
       </section>
       <section className="panel list-panel">
@@ -3485,34 +3752,240 @@ function Approvals() {
           <div className="tabs" role="tablist">
             {tabs.map((name) => (
               <Button aria-selected={tab === name} className={`tab ${tab === name ? "is-active" : ""}`} key={name} onClick={() => setTab(name)} role="tab">
-                {name}<span>{name === "All" ? approvalItems.length : approvalItems.filter((item) => item.type === name).length}</span>
+                {name}<span>{name === "All" ? inWeek.length : inWeek.filter((item) => item.type === name).length}</span>
               </Button>
             ))}
           </div>
-          <Button className="secondary-button">Approve all timesheets</Button>
+          <Button className="secondary-button" onClick={approveClean} title="Approves the visible waiting timesheets, except flagged ones and ones with a line sent back">Approve all timesheets</Button>
+        </div>
+        <div className="approval-filters">
+          <label>
+            <span>Week</span>
+            <select onChange={(event) => setWeek(event.target.value)} value={week}>
+              <option value="all">All weeks</option>
+              {weeks.map((monday) => (
+                <option key={monday} value={monday}>{weekLabel(monday)} ({items.filter((item) => item.week === monday && isWaiting(item)).length} waiting)</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Status</span>
+            <select onChange={(event) => setStatus(event.target.value)} value={status}>
+              <option value="all">All</option>
+              <option value="waiting">Waiting for approval</option>
+              <option value="approved">Approved</option>
+              <option value="changes">Changes requested</option>
+            </select>
+          </label>
         </div>
         <div className="approval-list">
-          {visible.map((item) => (
-            <article className={`approval ${decided[item.id] ? "is-decided" : ""}`} key={item.id}>
-              <Avatar initials={item.initials} name={item.name} />
-              <span className="approval-copy">
-                <strong>{item.name} <span>· {item.title}</span></strong>
-                <small>{item.detail} · {item.project} · {item.age}</small>
-              </span>
-              {item.flag && <Badge tone="amber">{item.flag}</Badge>}
-              <Badge tone={item.type === "Timesheets" ? "sand" : item.type === "Expenses" ? "violet" : "slate"}>{item.type.replace(/s$/, "")}</Badge>
-              {decided[item.id] ? (
-                <Badge tone={decided[item.id] === "Approved" ? "green" : "red"}>{decided[item.id]}</Badge>
-              ) : (
-                <span className="approval-actions">
-                  <Button className="secondary-button" onClick={() => setDecided({ ...decided, [item.id]: "Rejected" })}>Reject</Button>
-                  <Button className="primary-button compact" onClick={() => setDecided({ ...decided, [item.id]: "Approved" })}><Icon name="check" size={15} /> Approve</Button>
+          {visible.length === 0 && <p className="approval-empty">Nothing here{week !== "all" ? ` for ${weekLabel(week).toLowerCase()}` : ""}{status !== "all" ? " with that status" : ""}.</p>}
+          {visible.map((item) => {
+            const sheet = item.lines ? sheetSummary(item) : null;
+            const pending = isWaiting(item);
+            const done = doneStatus(item);
+            const late = item.lines && pending && approveDueOf(item.week) < TODAY;
+            return (
+              <article
+                aria-label={`Open ${item.name}, ${item.title}`}
+                className={`approval is-clickable ${!pending ? "is-decided" : ""}`}
+                key={item.id}
+                onClick={() => openReview(item.id)}
+                onKeyDown={(event) => event.key === "Enter" && event.target === event.currentTarget && openReview(item.id)}
+                role="button"
+                tabIndex={0}
+              >
+                <Avatar initials={item.initials} name={item.name} />
+                <span className="approval-copy">
+                  <strong>{item.name} <span>· {item.title}</span></strong>
+                  <small>
+                    {summaryText(item)} · {item.project} · {item.age}
+                    {item.lines && pending && ` · ${dueText(item)}`}
+                    {sheet && sheet.sentBack > 0 && ` · ${plural(sheet.sentBack, "line", "lines")} sent back`}
+                  </small>
+                  {sheet && (
+                    <span className="approval-days" aria-hidden="true">
+                      {sheet.days.map((day) => (
+                        <span className={`approval-day ${day.hours === 0 ? "is-empty" : day.hours < 8 ? "is-short" : ""}`} key={day.date}>
+                          {dayNames[dayIndex(day.date)].slice(0, 1)} {day.hours === 0 ? "–" : fmt1(day.hours)}
+                        </span>
+                      ))}
+                    </span>
+                  )}
                 </span>
-              )}
-            </article>
-          ))}
+                {late && <Badge tone="red">{dueText(item)}</Badge>}
+                {item.flag && <Badge tone="amber">{item.flag}</Badge>}
+                <Badge tone={item.type === "Timesheets" ? "sand" : item.type === "Expenses" ? "violet" : "slate"}>{item.type.replace(/s$/, "")}</Badge>
+                {pending ? (
+                  <span className="approval-actions" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                    <Button className="secondary-button" onClick={() => openReview(item.id, "reject")}>Reject</Button>
+                    <Button className="secondary-button" onClick={() => openReview(item.id, "changes")}>Request changes</Button>
+                    <Button className="primary-button compact" onClick={() => approve(item.id)}><Icon name="check" size={15} /> Approve</Button>
+                  </span>
+                ) : (
+                  <span className="approval-actions" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                    <Badge tone={done.tone}>{done.label}</Badge>
+                    {canUndo(item) && <Button className="text-button" onClick={() => undoApproval(item.id)}>Undo</Button>}
+                  </span>
+                )}
+              </article>
+            );
+          })}
         </div>
       </section>
+      {review && current && (
+        <div className="modal-backdrop" onClick={closeReview}>
+          <div aria-modal="true" className="modal-card approval-modal" onClick={(event) => event.stopPropagation()} role="dialog">
+            <div className="panel-heading">
+              <div>
+                <Heading level={2}>{current.name} · {current.title}</Heading>
+                <p>{current.lines ? `${weekLabel(current.week)} · ` : ""}{current.project} · sent {current.age}</p>
+              </div>
+              <Button aria-label="Close" className="icon-button small" onClick={closeReview}><Icon name="close" size={15} /></Button>
+            </div>
+            {current.flag && <Badge tone="amber">{current.flag}</Badge>}
+
+            {current.lines ? (
+              (() => {
+                const sheet = sheetSummary(current);
+                const lines = current.lines;
+                return (
+                  <>
+                    <div className="approval-totals">
+                      <div><span>Total</span><strong>{fmt1(sheet.total)} h</strong></div>
+                      <div><span>Billable</span><strong>{fmt1(sheet.billable)} h</strong></div>
+                      <div><span>Not billable</span><strong>{fmt1(sheet.total - sheet.billable)} h</strong></div>
+                      <div><span>Days filled</span><strong>{5 - sheet.empty} of 5</strong></div>
+                    </div>
+                    {(sheet.empty > 0 || sheet.short > 0) && (
+                      <p className="approval-warning">
+                        {[sheet.empty > 0 && plural(sheet.empty, "empty day", "empty days"), sheet.short > 0 && `${plural(sheet.short, "day", "days")} under 8 h`].filter(Boolean).join(" · ")}
+                      </p>
+                    )}
+                    <div className="approval-detail">
+                      {sheet.days.map((day) => (
+                        <div className="approval-day-group" key={day.date}>
+                          <div className={`approval-day-head ${day.hours === 0 ? "is-empty" : day.hours < 8 ? "is-short" : ""}`}>
+                            <strong>{fmtLongDay(day.date)}</strong>
+                            <span>{day.hours === 0 ? "Nothing logged" : `${fmt1(day.hours)} h`}</span>
+                          </div>
+                          {lines.filter((line) => line.date === day.date).map((line) => {
+                            const locked = isMonthLocked(monthOf(line.date));
+                            return (
+                              <div className="approval-line-block" key={line.id}>
+                                <div className="approval-line">
+                                  <span>
+                                    <strong>{line.what}</strong>
+                                    {line.note && <small>{line.note}</small>}
+                                  </span>
+                                  <Badge tone={lineTone[line.status]}>{lineLabel[line.status]}</Badge>
+                                  <b>{fmt1(line.hours)} h</b>
+                                  {line.status === "submitted" && open[line.id] === undefined && (
+                                    <Button className="text-button" onClick={() => setOpen({ ...open, [line.id]: "" })}>Send back</Button>
+                                  )}
+                                  {line.status === "approved" && !locked && !line.financeRequest && open[line.id] === undefined && (
+                                    <Button className="text-button" onClick={() => undoLineApproval(current, line)}>Undo approval</Button>
+                                  )}
+                                  {line.status === "approved" && open[line.id] === undefined && !line.financeRequest && (
+                                    <Button className="text-button" onClick={() => setOpen({ ...open, [line.id]: "" })}>{locked ? "Ask Finance" : "Recall"}</Button>
+                                  )}
+                                  {line.status === "sent_back" && (
+                                    <Button className="text-button" onClick={() => undoSendBack(current, line)}>Undo</Button>
+                                  )}
+                                </div>
+                                {line.comment && <p className="approval-line-note">{line.recalled ? "Recalled" : "Sent back"}: “{line.comment}”</p>}
+                                {line.financeRequest && <p className="approval-line-note">Asked Finance to reopen {monthName(monthOf(line.date))}: “{line.financeRequest}”</p>}
+                                {open[line.id] !== undefined && (
+                                  <label className="approval-line-input">
+                                    <span>
+                                      {line.status === "approved"
+                                        ? locked ? `${monthName(monthOf(line.date))} is locked. Why should Finance reopen this line?` : "Why are you recalling this line? The consultant sees it."
+                                        : "What is wrong with this line? The consultant sees it."}
+                                    </span>
+                                    <textarea
+                                      autoFocus
+                                      maxLength={300}
+                                      onChange={(event) => { setOpen({ ...open, [line.id]: event.target.value }); setNoteError(""); }}
+                                      placeholder="e.g. Wrong project, customer text missing"
+                                      rows={2}
+                                      value={open[line.id]}
+                                    />
+                                  </label>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()
+            ) : (
+              <dl className="approval-facts">
+                {current.facts?.map(([label, value]) => (
+                  <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+                ))}
+              </dl>
+            )}
+
+            {noteError && <p className="form-message form-message--error" role="alert">{noteError}</p>}
+            {current.lines && Object.keys(open).length > 0 ? (
+              <div className="approval-footer">
+                <Button className="secondary-button" onClick={() => { setOpen({}); setNoteError(""); }}>Cancel</Button>
+                <Button className="primary-button compact" onClick={sendLines}>
+                  {Object.keys(open).every((id) => current.lines!.find((line) => line.id === Number(id))?.status === "submitted")
+                    ? `Send back ${plural(Object.keys(open).length, "line", "lines")}`
+                    : `Confirm ${plural(Object.keys(open).length, "line", "lines")}`}
+                </Button>
+              </div>
+            ) : !isWaiting(current) ? (
+              <div className="approval-result">
+                {!current.lines && (
+                  <>
+                    <Badge tone={doneStatus(current).tone}>{doneStatus(current).label}</Badge>
+                    {current.decision?.note && <p>“{current.decision.note}”</p>}
+                  </>
+                )}
+                <div className="approval-footer">
+                  {!current.lines && <Button className="secondary-button" onClick={() => reopenDecision(current.id)}>Change decision</Button>}
+                  {current.lines && current.lines.some((line) => line.status === "sent_back") && <Button className="secondary-button" onClick={() => undoAllSendBacks(current.id)}>Undo send-backs</Button>}
+                  {current.lines && canUndo(current) && <Button className="secondary-button" onClick={() => undoApproval(current.id)}>Undo approval</Button>}
+                  <Button className="secondary-button" onClick={closeReview}>Close</Button>
+                </div>
+              </div>
+            ) : review.mode === "view" ? (
+              <div className="approval-footer">
+                <Button className="secondary-button" onClick={() => openReview(current.id, "reject")}>Reject</Button>
+                <Button className="secondary-button" onClick={() => openReview(current.id, "changes")}>Request changes</Button>
+                <Button className="primary-button compact" onClick={() => approve(current.id)}><Icon name="check" size={15} /> {current.lines ? "Approve week" : "Approve"}</Button>
+              </div>
+            ) : (
+              <div className="approval-note">
+                <label className="field">
+                  <span>{review.mode === "reject" ? "Why are you rejecting this?" : "What needs to change?"}</span>
+                  <textarea
+                    autoFocus
+                    maxLength={500}
+                    onChange={(event) => { setNote(event.target.value); setNoteError(""); }}
+                    placeholder={review.mode === "reject" ? "e.g. Wrong project. Wednesday was the CRM workshop." : "e.g. Add the receipt for the second night."}
+                    rows={3}
+                    value={note}
+                  />
+                </label>
+                <p className="approval-hint">
+                  {current.name.split(" ")[0]} sees this note and can fix it and send it again.
+                  {current.lines && " It goes on every line still waiting; to send back a single line, use Send back on that line."}
+                </p>
+                <div className="approval-footer">
+                  <Button className="secondary-button" onClick={() => openReview(current.id)}>Back</Button>
+                  <Button className="primary-button compact" onClick={sendNote}>{review.mode === "reject" ? "Reject with note" : "Send change request"}</Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }
