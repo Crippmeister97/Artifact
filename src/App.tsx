@@ -1336,6 +1336,11 @@ function withHistory(before: TimeEntry[], after: TimeEntry[]): TimeEntry[] {
   });
 }
 
+// "Today" at the real clock time, for things done during the demo.
+function nowAt() {
+  const now = new Date();
+  return `${TODAY}T${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
 const fmtWhen = (at: string) => `${fmtDay(at.slice(0, 10))}${at.length > 10 ? ` ${at.slice(11)}` : ""}`;
 
 function TimeEntries({ entries, setEntries: saveEntries, weekStart, setWeekStart, requests, onRequest }: TimeData) {
@@ -2501,7 +2506,18 @@ type HoursPerson = {
 type HoursPeriod = { key: string; kind: "month" | "week"; label: string; start: string; end: string };
 type DayState = "full" | "partial" | "none" | "absence" | "off" | "future";
 type HoursSort = "name" | "submitted" | "last";
-type HoursFilter = "all" | "behind" | "consultant" | "pm" | "done" | "inactive" | "afterLock" | "empty";
+type HoursFilter = "all" | "behind" | "handled" | "consultant" | "pm" | "done" | "inactive" | "afterLock" | "empty";
+// What Finance did about someone who is behind. A wait comes back after its date; the others hold for the period.
+type Handling = { kind: "wait" | "absence" | "exception" | "talked"; note: string; until?: string; at: string };
+type LogLine = { at: string; text: string };
+// Earlier reminders, so the history isn't empty in the demo.
+const initialHoursLog: Record<string, LogLine[]> = {
+  ad: [
+    { at: "2026-10-23T14:00", text: "Automatic Teams reminder: log your hours" },
+    { at: "2026-10-28T09:00", text: "Email from Finance: October closes Mon 2 Nov" },
+  ],
+  lk: [{ at: "2026-10-26T09:00", text: "Automatic Teams reminder: submit weeks 40–43" }],
+};
 type MonthLock = { at: string; by: string };
 type Unlock = { person: string; month: string; until: string; reason: string; at: string; by: string };
 
@@ -2592,8 +2608,10 @@ function workdaysBetween(from: string, to: string) {
 
 // Working days up to the cutoff are expected. A month always expects the whole month; a week expects the days so far.
 // Days that haven't come yet show as "not yet" but still count in a month.
-function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<string, MonthLock>, cutoff: string) {
-  const list = hoursEntries.filter((entry) => entry.person === person.id && entry.date >= period.start && entry.date <= period.end);
+// extra: time Finance logged on someone's behalf in this session (e.g. vacation that wasn't logged).
+function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<string, MonthLock>, cutoff: string, extra: HoursEntry[] = []) {
+  const source = extra.length ? [...hoursEntries, ...extra] : hoursEntries;
+  const list = source.filter((entry) => entry.person === person.id && entry.date >= period.start && entry.date <= period.end);
   const counted = list.filter((entry) => entry.date <= cutoff);
   const sum = (items: HoursEntry[]) => items.reduce((total, entry) => total + entry.hours, 0);
   const days: { date: string; state: DayState; hours: number; status?: HoursStatus }[] = [];
@@ -2629,7 +2647,7 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
   }
   const reported = sum(counted);
   const weeksOf = (status: HoursStatus) => [...new Set(counted.filter((entry) => entry.status === status).map((entry) => entry.date).sort().map((date) => mondayOf(date)))];
-  const all = hoursEntries.filter((entry) => entry.person === person.id);
+  const all = source.filter((entry) => entry.person === person.id);
   const last = all.reduce((latest, entry) => (entry.date > latest ? entry.date : latest), "");
   return {
     days,
@@ -2767,7 +2785,12 @@ function HoursOverview() {
   const [sort, setSort] = useState<{ key: HoursSort; dir: 1 | -1 }>({ key: "name", dir: 1 });
   const [locks, setLocks] = useState<Record<string, MonthLock>>({ "2026-09": { at: addDays(monthDeadline("2026-09"), 1), by: "Automatic" } });
   const [unlocks, setUnlocks] = useState(initialUnlocks);
-  const [modal, setModal] = useState<"lock" | "unlock" | null>(null);
+  const [modal, setModal] = useState<"lock" | "unlock" | "handle" | "work" | null>(null);
+  const [handled, setHandled] = useState<Record<string, Handling>>({});
+  const [personLog, setPersonLog] = useState<Record<string, LogLine[]>>(initialHoursLog);
+  const [extra, setExtra] = useState<HoursEntry[]>([]);
+  const [handleForm, setHandleForm] = useState({ person: "", kind: "wait" as Handling["kind"], until: addDays(mondayOf(TODAY), 7), note: "", error: "" });
+  const [work, setWork] = useState({ queue: [] as string[], index: 0, handled: 0, note: "" });
   const [unlockForm, setUnlockForm] = useState({ person: "", until: addDays(TODAY, 3), reason: "", error: "" });
   // The week columns are opt-in; the choice is remembered in this browser.
   const [showWeeks, setShowWeeks] = useState(() => {
@@ -2799,7 +2822,7 @@ function HoursOverview() {
   const cutoff = current && period.kind === "week" ? TODAY : period.end;
   const rows = hoursPeople
     .map((person) => {
-      const stats = personHours(person, period, locks, cutoff);
+      const stats = personHours(person, period, locks, cutoff, extra);
       return { person, stats, steps: nextSteps(person, stats), unlock: unlocks.find((item) => item.person === person.id && item.month === month && item.until >= TODAY) };
     })
     .sort((a, b) => {
@@ -2824,6 +2847,11 @@ function HoursOverview() {
     </th>
   );
 
+  // A handling counts while it holds: a wait until its date, the rest for the whole period.
+  const handlingOf = (personId: string) => {
+    const item = handled[`${personId}|${period.key}`];
+    return item && (item.kind !== "wait" || (item.until ?? "") >= TODAY) ? item : undefined;
+  };
   const total = (pick: (row: (typeof rows)[number]) => number) => rows.reduce((sum, row) => sum + pick(row), 0);
   const expected = total((row) => row.stats.expected);
   const submitted = total((row) => row.stats.submitted);
@@ -2843,7 +2871,8 @@ function HoursOverview() {
 
   const tests: Record<HoursFilter, (row: (typeof rows)[number]) => boolean> = {
     all: () => true,
-    behind: (row) => row.steps.some((step) => step.late),
+    behind: (row) => row.steps.some((step) => step.late) && !handlingOf(row.person.id),
+    handled: (row) => row.steps.some((step) => step.late) && !!handlingOf(row.person.id),
     consultant: (row) => behind(row, "consultant"),
     pm: (row) => behind(row, "pm"),
     done: (row) => !row.steps.some((step) => step.late),
@@ -2854,6 +2883,7 @@ function HoursOverview() {
   const filters: { key: HoursFilter; label: string }[] = [
     { key: "all", label: "Everyone" },
     { key: "behind", label: "Behind" },
+    { key: "handled", label: "Handled" },
     ...(month && lock ? [{ key: "afterLock" as HoursFilter, label: "Added after lock" }] : []),
   ];
   const search = query.trim().toLowerCase();
@@ -2931,18 +2961,81 @@ function HoursOverview() {
 
   const pctOf = (hours: number) => (expected ? Math.round((hours / expected) * 100) : 0);
 
-  const behindRows = visible.filter((row) => row.steps.some((step) => step.late));
-  const okRows = visible.filter((row) => !row.steps.some((step) => step.late));
+  const isLate = (row: (typeof rows)[number]) => row.steps.some((step) => step.late);
+  const behindRows = visible.filter((row) => isLate(row) && !handlingOf(row.person.id));
+  const handledRows = visible.filter((row) => isLate(row) && !!handlingOf(row.person.id));
+  const okRows = visible.filter((row) => !isLate(row));
 
-  const remind = (person: HoursPerson, step: NextStep) =>
+  const addLog = (personId: string, text: string) => setPersonLog((before) => ({ ...before, [personId]: [...(before[personId] ?? []), { at: nowAt(), text }] }));
+  const nextMonday = addDays(mondayOf(TODAY), 7);
+  const handlingText = (item: Handling) =>
+    item.kind === "wait"
+      ? `Reminded · waiting until ${fmtDay(item.until ?? TODAY)}${item.note ? ` · ${item.note}` : ""}`
+      : item.kind === "absence"
+        ? `Absence logged by Finance${item.note ? ` · ${item.note}` : ""}`
+        : item.kind === "exception"
+          ? `Exception: ${item.note}`
+          : `Talked to them: ${item.note}`;
+  // Working days in overdue weeks with no time: what Finance can log as vacation or absence for someone.
+  const absenceDays = (row: (typeof rows)[number]) => row.stats.days.filter((day) => day.state === "none" && addDays(mondayOf(day.date), 7) < TODAY);
+
+  function applyHandling(row: (typeof rows)[number], kind: Handling["kind"], note: string, until?: string) {
+    const name = row.person.name;
+    if (kind === "absence") {
+      const days = absenceDays(row);
+      setExtra([...extra, ...days.map((day) => ({ person: row.person.id, date: day.date, hours: row.person.perDay, kind: "absence" as HoursKind, status: "approved" as HoursStatus, created: TODAY }))]);
+      addLog(row.person.id, `Finance logged ${plural(days.length, "day", "days")} of absence on their behalf${note ? `: ${note}` : ""}`);
+    } else addLog(row.person.id, handlingText({ kind, note, until, at: TODAY }));
+    setHandled({ ...handled, [`${row.person.id}|${period.key}`]: { kind, note, until, at: nowAt() } });
+    setToast(kind === "wait" ? `${name} is handled until ${fmtDay(until ?? TODAY)}.` : kind === "absence" ? `Absence logged for ${name}.` : `${name} is handled.`);
+  }
+
+  function undoHandling(row: (typeof rows)[number]) {
+    const key = `${row.person.id}|${period.key}`;
+    const rest = { ...handled };
+    delete rest[key];
+    setHandled(rest);
+    addLog(row.person.id, "Handling undone");
+  }
+
+  function openHandle(row: (typeof rows)[number]) {
+    setHandleForm({ person: row.person.id, kind: "wait", until: nextMonday, note: "", error: "" });
+    setModal("handle");
+  }
+
+  function saveHandle() {
+    const row = rows.find((item) => item.person.id === handleForm.person);
+    if (!row) return;
+    if ((handleForm.kind === "exception" || handleForm.kind === "talked") && !handleForm.note.trim()) {
+      setHandleForm({ ...handleForm, error: "Write a short note so the next person in Finance knows why." });
+      return;
+    }
+    applyHandling(row, handleForm.kind, handleForm.note.trim(), handleForm.kind === "wait" ? handleForm.until : undefined);
+    setModal(null);
+  }
+
+  // Work through the list: the people behind, one at a time, each with the actions that fit.
+  function startWork() {
+    setWork({ queue: behindRows.map((row) => row.person.id), index: 0, handled: 0, note: "" });
+    setModal("work");
+  }
+  function workNext(didHandle: boolean) {
+    setWork({ ...work, index: work.index + 1, handled: work.handled + (didHandle ? 1 : 0), note: "" });
+  }
+
+  const remind = (person: HoursPerson, step: NextStep) => {
+    addLog(person.id, step.who === "consultant" ? `Reminded in Teams: ${stepAction(step)}` : `Nudged ${person.pm} in Teams: ${stepAction(step)}`);
     setToast(
       step.who === "consultant"
         ? `Sent in Teams to ${person.name}: "Reminder: ${stepAction(step)}."`
         : `Sent in Teams to ${person.pm}: "Please ${stepAction(step)} for ${person.name}. It's overdue."`,
     );
+  };
 
-  const renderRow = ({ person, stats, steps, unlock }: (typeof rows)[number]) => {
+  const renderRow = (row: (typeof rows)[number]) => {
+    const { person, stats, steps, unlock } = row;
     const late = steps.filter((step) => step.late);
+    const handling = late.length ? handlingOf(person.id) : undefined;
     const open = openRow === person.id;
     const partTime = person.days.length * person.perDay < 40 ? Math.round((person.days.length * person.perDay) / 0.4) : 0;
     const unitsFor = units.map(([key, dates, label]) => {
@@ -2987,7 +3080,15 @@ function HoursOverview() {
           </td>
           <td className="ho-steps" onClick={(event) => (event.target as HTMLElement).closest("button") && event.stopPropagation()}>
             {/* Only what's overdue, each with its action right next to it; the rest sits in the details. */}
-            {late.length ? (
+            {handling ? (
+              <>
+                {late.map((step) => <span className="ho-step is-upcoming" key={step.text}>{step.text}</span>)}
+                <span className="ho-step is-handled">
+                  {handlingText(handling)}
+                  <Button className="text-button ho-step-action" onClick={() => undoHandling(row)}>Undo</Button>
+                </span>
+              </>
+            ) : late.length ? (
               late.map((step) => (
                 <span className={`ho-step ho-step--${step.who} is-late`} key={step.text}>
                   {step.text}
@@ -2999,6 +3100,7 @@ function HoursOverview() {
             )}
           </td>
           <td className="ho-actions" onClick={(event) => event.stopPropagation()}>
+            {late.length > 0 && !handling && <Button className="secondary-button ho-handle" onClick={() => openHandle(row)}>Handle</Button>}
             {month && lock && !unlock && <Button className="text-button" onClick={() => openUnlock(person.id)}>Unlock</Button>}
             <button aria-label={open ? "Hide details" : "Show details"} className="ho-chevron-button" onClick={() => setOpenRow(open ? null : person.id)} type="button">
               <i className={`ho-chevron ${open ? "is-open" : ""}`} aria-hidden="true">›</i>
@@ -3028,6 +3130,14 @@ function HoursOverview() {
                     <span className="ho-step is-done">✓ Everything submitted and approved</span>
                   )}
                 </div>
+                {(personLog[person.id] ?? []).length > 0 && (
+                  <div className="ho-detail-log">
+                    <span>History</span>
+                    {[...(personLog[person.id] ?? [])].reverse().map((line, index) => (
+                      <small key={index}><b>{fmtWhen(line.at)}</b> {line.text}</small>
+                    ))}
+                  </div>
+                )}
               </div>
             </td>
           </tr>
@@ -3156,8 +3266,17 @@ function HoursOverview() {
               {filter === "all" ? (
                 <>
                   {/* Everyone: the people behind first, the rest folded away until asked for. */}
-                  {behindRows.length > 0 && <tr className="ho-group"><td colSpan={tableCols}>Behind · {behindRows.length}</td></tr>}
+                  {behindRows.length > 0 && (
+                    <tr className="ho-group">
+                      <td colSpan={tableCols}>
+                        Behind · {behindRows.length}
+                        <Button className="text-button ho-work" onClick={startWork}>Work through the list</Button>
+                      </td>
+                    </tr>
+                  )}
                   {behindRows.map(renderRow)}
+                  {handledRows.length > 0 && <tr className="ho-group"><td colSpan={tableCols}>Handled · {handledRows.length}</td></tr>}
+                  {handledRows.map(renderRow)}
                   {okRows.length > 0 && (
                     <tr aria-expanded={showOnTrack || !!query} className="ho-group is-toggle" onClick={() => setShowOnTrack(!showOnTrack)}>
                       <td colSpan={tableCols}><i className={`ho-chevron ${showOnTrack || query ? "is-open" : ""}`} aria-hidden="true">›</i> On track · {okRows.length}</td>
@@ -3250,7 +3369,118 @@ function HoursOverview() {
       {modal && (
         <div className="modal-backdrop tw-sheet" onClick={() => setModal(null)}>
           <div aria-modal="true" className="modal-card" onClick={(event) => event.stopPropagation()} role="dialog">
-            {modal === "lock" ? (
+            {modal === "handle" ? (
+              (() => {
+                const row = rows.find((item) => item.person.id === handleForm.person);
+                if (!row) return null;
+                const days = absenceDays(row);
+                const options: { kind: Handling["kind"]; title: string; sub: string }[] = [
+                  { kind: "wait", title: "Reminded, wait until a date", sub: "It drops off the list and comes back if nothing has happened by then." },
+                  ...(days.length ? [{ kind: "absence" as const, title: "It's vacation or absence, log it for them", sub: `${plural(days.length, "day", "days")} with no time in overdue weeks. Shows as "logged by Finance".` }] : []),
+                  { kind: "talked", title: "Talked to them", sub: "A note on what you agreed." },
+                  { kind: "exception", title: "Exception, don't count this month", sub: "E.g. parental leave or an ended assignment. Needs a note." },
+                ];
+                return (
+                  <>
+                    <div className="panel-heading">
+                      <div><Heading level={2}>Handle {row.person.name}</Heading><p>{row.steps.filter((step) => step.late).map((step) => step.text).join(" · ")}</p></div>
+                      <Button aria-label="Close" className="icon-button small" onClick={() => setModal(null)}><Icon name="close" size={15} /></Button>
+                    </div>
+                    <div className="ho-handle-options">
+                      {options.map((option) => (
+                        <label className={`ho-handle-option ${handleForm.kind === option.kind ? "is-active" : ""}`} key={option.kind}>
+                          <input checked={handleForm.kind === option.kind} name="handle" onChange={() => setHandleForm({ ...handleForm, kind: option.kind, error: "" })} type="radio" />
+                          <span><strong>{option.title}</strong><small>{option.sub}</small></span>
+                        </label>
+                      ))}
+                    </div>
+                    {handleForm.kind === "wait" && (
+                      <label className="field">
+                        <span>Wait until</span>
+                        <TextInput min={TODAY} onChange={(event) => setHandleForm({ ...handleForm, until: event.target.value })} type="date" value={handleForm.until} />
+                      </label>
+                    )}
+                    <label className="field">
+                      <span>Note {handleForm.kind === "exception" || handleForm.kind === "talked" ? "" : "(optional)"}</span>
+                      <TextInput maxLength={200} onChange={(event) => setHandleForm({ ...handleForm, note: event.target.value, error: "" })} placeholder="e.g. Vacation 5–9 Oct, logs it on Monday" value={handleForm.note} />
+                    </label>
+                    {handleForm.error && <p className="form-message form-message--error" role="alert">{handleForm.error}</p>}
+                    <Button className="primary-button compact full" onClick={saveHandle}>Save</Button>
+                  </>
+                );
+              })()
+            ) : modal === "work" ? (
+              (() => {
+                const row = rows.find((item) => item.person.id === work.queue[work.index]);
+                if (!row) {
+                  const left = rows.filter((item) => isLate(item) && !handlingOf(item.person.id)).length;
+                  return (
+                    <div className="ho-work-done">
+                      <Heading level={2}>{left ? "That's the list" : "All handled"}</Heading>
+                      <p>You handled {plural(work.handled, "person", "people")}. {left ? `${plural(left, "person is", "people are")} still behind.` : "Nobody is left behind."}</p>
+                      <Button className="primary-button compact full" onClick={() => setModal(null)}>Done</Button>
+                    </div>
+                  );
+                }
+                const late = row.steps.filter((step) => step.late);
+                const days = absenceDays(row);
+                const reminder = () => {
+                  late.forEach((step) => remind(row.person, step));
+                  applyHandling(row, "wait", work.note.trim(), nextMonday);
+                  workNext(true);
+                };
+                return (
+                  <>
+                    <div className="panel-heading">
+                      <div><small className="ho-work-count">{work.index + 1} of {work.queue.length}</small><Heading level={2}>{row.person.name}</Heading><p>{row.person.role} · PM {row.person.pm}</p></div>
+                      <Button aria-label="Close" className="icon-button small" onClick={() => setModal(null)}><Icon name="close" size={15} /></Button>
+                    </div>
+                    <div className="ho-detail-steps">
+                      {late.map((step) => <span className={`ho-step ho-step--${step.who} is-late`} key={step.text}>{step.text}</span>)}
+                    </div>
+                    <div className="ho-detail-weeks">
+                      {units.map(([key, dates, label]) => {
+                        const unitDays = row.stats.days.filter((day) => dates.includes(day.date));
+                        const unit = unitStatus(unitDays, row.person.perDay);
+                        return (
+                          <div className="ho-detail-week" key={key} title={unit.title}>
+                            <small>{label}</small>
+                            <span className={`ho-unit-chip is-${unit.tone}`}>{unit.label}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {(personLog[row.person.id] ?? []).length > 0 && (
+                      <div className="ho-detail-log">
+                        <span>History</span>
+                        {[...(personLog[row.person.id] ?? [])].reverse().slice(0, 3).map((line, index) => <small key={index}><b>{fmtWhen(line.at)}</b> {line.text}</small>)}
+                      </div>
+                    )}
+                    <label className="field">
+                      <span>Note (needed for an exception)</span>
+                      <TextInput maxLength={200} onChange={(event) => setWork({ ...work, note: event.target.value })} placeholder="Optional" value={work.note} />
+                    </label>
+                    <div className="ho-work-actions">
+                      <Button className="primary-button compact" onClick={reminder}>{late.some((step) => step.who === "pm") && !late.some((step) => step.who === "consultant") ? "Nudge PM" : "Remind"} and wait until {fmtDay(nextMonday)}</Button>
+                      {days.length > 0 && (
+                        <Button className="secondary-button" onClick={() => { applyHandling(row, "absence", work.note.trim()); workNext(true); }}>Log {plural(days.length, "day", "days")} as absence</Button>
+                      )}
+                      <Button
+                        className="secondary-button"
+                        onClick={() => {
+                          if (!work.note.trim()) return setToast("Write a note for the exception first.");
+                          applyHandling(row, "exception", work.note.trim());
+                          workNext(true);
+                        }}
+                      >
+                        Exception
+                      </Button>
+                      <Button className="text-button" onClick={() => workNext(false)}>Skip</Button>
+                    </div>
+                  </>
+                );
+              })()
+            ) : modal === "lock" ? (
               <>
                 <div className="panel-heading">
                   <div><Heading level={2}>Lock {period.label}</Heading><p>Nobody can add or change time in a locked month without an unlock.</p></div>

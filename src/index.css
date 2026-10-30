@@ -1276,3 +1276,25 @@ button.mini-row > .icon { color: var(--muted); }
 .ho-group.is-toggle:hover td { color: var(--ink); }
 .ho-group .ho-chevron { margin-right: 4px; font-size: 13px; }
 .ho-view { margin-left: 8px; }
+
+/* Handling people who are behind. */
+.ho-handle { height: 30px; padding: 0 12px; font-size: 11px; }
+.ho-step.is-handled { color: #5d7a5a; }
+.ho-step.is-handled::before { background: #8fae8a; }
+.ho-work { margin-left: 14px; padding: 0; font-size: 11px; letter-spacing: 0; text-transform: none; }
+.ho-detail-log { display: grid; gap: 3px; }
+.ho-detail-log > span { color: #a19d90; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.ho-detail-log small { color: var(--quiet, var(--muted)); font-size: 12px; }
+.ho-detail-log b { margin-right: 6px; color: var(--ink); font-weight: 600; }
+.ho-handle-options { margin: 14px 0; display: grid; gap: 8px; }
+.ho-handle-option { padding: 10px 12px; border: 1px solid var(--hair, #ebe8df); border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.ho-handle-option.is-active { border-color: #8f876d; background: #faf9f5; }
+.ho-handle-option input { margin-top: 3px; }
+.ho-handle-option span { display: grid; gap: 2px; }
+.ho-handle-option strong { font-size: 13px; }
+.ho-handle-option small { color: var(--quiet, var(--muted)); font-size: 12px; }
+.ho-work-count { color: #a19d90; font-size: 11px; font-weight: 600; }
+.modal-card .ho-detail-steps, .modal-card .ho-detail-weeks, .modal-card .ho-detail-log { margin: 12px 0; }
+.ho-work-actions { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ho-work-done { display: grid; gap: 10px; }
+.ho-work-done p { margin: 0; color: var(--quiet, var(--muted)); }
