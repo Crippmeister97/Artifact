@@ -1179,3 +1179,51 @@ button.mini-row > .icon { color: var(--muted); }
 .ho-reminder small { color: #a19d90; font-size: 11px; }
 .ho-reminder span { display: grid; gap: 2px; color: var(--quiet, var(--muted)); font-size: 12px; line-height: 1.45; }
 .ho-reminder strong { color: var(--ink); font-size: 12px; }
+
+/* Approvals: clickable rows, day strip and the review modal */
+.approval.is-clickable { cursor: pointer; }
+.approval.is-clickable:hover { background: #faf9f5; }
+.approval.is-clickable:focus-visible { outline: 2px solid #222; outline-offset: -2px; }
+.approval-days { display: flex; gap: 4px; margin-top: 2px; }
+.approval-day { padding: 1px 6px; border-radius: 5px; background: #f0efe8; color: #5f5d56; font-size: 9px; font-variant-numeric: tabular-nums; }
+.approval-day.is-short { background: #fbefd6; color: #8a5a00; }
+.approval-day.is-empty { background: #f8e3e0; color: #a33a2e; }
+.approval-modal { width: min(560px, 100%); display: flex; flex-direction: column; gap: 12px; }
+.approval-totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.approval-totals div { padding: 8px 10px; border-radius: 8px; background: #f6f5f0; display: flex; flex-direction: column; gap: 2px; }
+.approval-totals span { color: var(--muted); font-size: 9px; }
+.approval-totals strong { font-size: 13px; }
+.approval-warning { margin: 0; padding: 8px 10px; border-radius: 8px; background: #fbefd6; color: #8a5a00; font-size: 11px; }
+.approval-detail { display: flex; flex-direction: column; gap: 8px; }
+.approval-day-head { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #efefea; font-size: 11px; }
+.approval-day-head span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.approval-day-head.is-short span { color: #8a5a00; }
+.approval-day-head.is-empty span { color: #a33a2e; }
+.approval-line { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 11px; }
+.approval-line > span { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.approval-line small { color: var(--muted); font-size: 10px; }
+.approval-line b { min-width: 44px; text-align: right; font-weight: 650; font-variant-numeric: tabular-nums; }
+.approval-facts { margin: 0; display: grid; gap: 8px; }
+.approval-facts div { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #efefea; font-size: 11px; }
+.approval-facts dt { color: var(--muted); }
+.approval-facts dd { margin: 0; font-weight: 600; }
+.approval-footer { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.approval-footer .secondary-button, .approval-footer .primary-button { height: 34px; font-size: 11px; }
+.approval-note { display: flex; flex-direction: column; gap: 8px; }
+.approval-note textarea { width: 100%; padding: 9px 10px; border: 1px solid #deddd5; border-radius: 8px; font: inherit; font-size: 12px; resize: vertical; background: var(--surface); }
+.approval-hint { margin: 0; color: var(--muted); font-size: 10px; }
+.approval-result { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.approval-result p { margin: 0; padding: 8px 10px; border-radius: 8px; background: #f6f5f0; font-size: 12px; }
+@media (max-width: 640px) { .approval-totals { grid-template-columns: repeat(2, 1fr); } }
+.approval-filters { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 12px; }
+.approval-filters label { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
+.approval-filters select { height: 30px; padding: 0 8px; border: 1px solid #deddd5; border-radius: 8px; background: var(--surface); font: inherit; font-size: 11px; color: inherit; }
+.approval-empty { margin: 24px 0; text-align: center; color: var(--muted); font-size: 12px; }
+.approval-actions { flex-wrap: nowrap; }
+.approval-line-block { border-bottom: 1px solid #f4f3ee; }
+.approval-line-block:last-child { border-bottom: 0; }
+.approval-line .text-button { font-size: 10px; white-space: nowrap; }
+.approval-line-note { margin: 0 0 6px; padding: 6px 10px; border-radius: 8px; background: #fbefd6; color: #6b4600; font-size: 11px; }
+.approval-line-input { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.approval-line-input span { color: var(--muted); font-size: 10px; }
+.approval-line-input textarea { width: 100%; padding: 8px 10px; border: 1px solid #deddd5; border-radius: 8px; font: inherit; font-size: 12px; resize: vertical; background: var(--surface); }
