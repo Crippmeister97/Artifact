@@ -1148,3 +1148,9 @@ button.mini-row > .icon { color: var(--muted); }
   .calm .fd-bars { gap: 3px; }
   .calm .fd-bar span { font-size: 9px; }
 }
+
+/* PM queue: overdue hours lead, what isn't due yet sits quietly underneath. */
+.pm-hours { display: flex; flex-direction: column; align-items: flex-end; text-align: right; white-space: nowrap; }
+.pm-hours b { font-size: 13px; }
+.pm-hours b.is-late { color: var(--red); }
+.pm-hours small { color: var(--quiet, var(--muted)); font-size: 11px; }

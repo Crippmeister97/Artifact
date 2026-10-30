@@ -2509,11 +2509,13 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
 }
 
 type HoursStats = ReturnType<typeof personHours>;
-type NextStep = { who: "consultant" | "pm"; text: string; late: boolean; hours: number };
+type NextStep = { who: "consultant" | "pm"; text: string; late: boolean; hours: number; due: string };
 
 // Whose turn it is. Invoicing uses approved hours only (Henry, 30 Oct), so a period is done when every working day is
 // submitted and approved. In a weekly rhythm consultants submit a week by the Monday after and PMs approve it by the
 // Wednesday after. Anything not due yet is shown, but quietly; only overdue steps put someone behind.
+const period0 = (stats: HoursStats) => addDays(mondayOf(stats.days[0]?.date ?? TODAY), 7);
+
 function nextSteps(person: HoursPerson, stats: HoursStats): NextStep[] {
   const first = person.name.split(" ")[0];
   const submitDue = (monday: string) => addDays(monday, 7);
@@ -2524,17 +2526,57 @@ function nextSteps(person: HoursPerson, stats: HoursStats): NextStep[] {
   // Split weeks into overdue and not yet due, so each becomes its own step.
   const split = (mondays: string[], due: (monday: string) => string) => [mondays.filter((monday) => due(monday) < TODAY), mondays.filter((monday) => due(monday) >= TODAY)];
   const steps: NextStep[] = [];
-  if (stats.expected && !stats.reported) return [{ who: "consultant", text: `${first}: nothing logged yet`, late: true, hours: stats.expected }];
+  if (stats.expected && !stats.reported) return [{ who: "consultant", text: `${first}: nothing logged yet`, late: true, hours: stats.expected, due: period0(stats) }];
   const emptyWeeks = [...new Set(stats.days.filter((day) => day.state === "none").map((day) => mondayOf(day.date)))];
   const hoursIn = (mondays: string[]) => stats.days.filter((day) => day.state === "none" && mondays.includes(mondayOf(day.date))).length * person.perDay;
   const hoursAt = (mondays: string[], status: HoursStatus) => stats.days.filter((day) => day.status === status && mondays.includes(mondayOf(day.date))).reduce((sum, day) => sum + day.hours, 0);
   for (const group of split(emptyWeeks, submitDue))
-    if (group.length) steps.push({ who: "consultant", text: `${first}: log ${fmtHours(hoursIn(group))} h in ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursIn(group) });
+    if (group.length) steps.push({ who: "consultant", text: `${first}: log ${fmtHours(hoursIn(group))} h in ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursIn(group), due: submitDue(group[0]) });
   for (const group of split(stats.draftWeeks.filter((monday) => !emptyWeeks.includes(monday)), submitDue))
-    if (group.length) steps.push({ who: "consultant", text: `${first}: submit ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursAt(group, "draft") });
+    if (group.length) steps.push({ who: "consultant", text: `${first}: submit ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursAt(group, "draft"), due: submitDue(group[0]) });
   for (const group of split(stats.waitingWeeks, approveDue))
-    if (group.length) steps.push({ who: "pm", text: `${person.pm}: approve ${weeks(group)} · ${when(approveDue(group[0]))}`, late: approveDue(group[0]) < TODAY, hours: hoursAt(group, "submitted") });
+    if (group.length) steps.push({ who: "pm", text: `${person.pm}: approve ${weeks(group)} · ${when(approveDue(group[0]))}`, late: approveDue(group[0]) < TODAY, hours: hoursAt(group, "submitted"), due: approveDue(group[0]) });
   return steps;
+}
+
+// Submitted hours per project manager, split into overdue and not due yet, from the same next steps the rows show.
+function pmQueue(rows: { person: HoursPerson; steps: NextStep[] }[]) {
+  const groups: Record<string, { overdue: number; upcoming: number; late: Set<string>; daysLate: number; nextDue: string }> = {};
+  for (const { person, steps } of rows)
+    for (const step of steps.filter((item) => item.who === "pm")) {
+      const group = (groups[person.pm] ??= { overdue: 0, upcoming: 0, late: new Set(), daysLate: 0, nextDue: "9999" });
+      if (step.late) {
+        group.overdue += step.hours;
+        group.late.add(person.id);
+        group.daysLate = Math.max(group.daysLate, workdaysBetween(step.due, TODAY));
+      } else {
+        group.upcoming += step.hours;
+        if (step.due < group.nextDue) group.nextDue = step.due;
+      }
+    }
+  return Object.entries(groups).sort((a, b) => b[1].overdue - a[1].overdue || b[1].upcoming - a[1].upcoming);
+}
+
+// One row of the PM queue, used by Hours overview and the Finance dashboard.
+function PmQueueRow({ pm, group, onNudge, className }: { pm: string; group: ReturnType<typeof pmQueue>[number][1]; onNudge: () => void; className: string }) {
+  return (
+    <div className={className}>
+      <Avatar name={pm} size="small" />
+      <span className="case-cell">
+        <strong>{pm}</strong>
+        <small>
+          {group.overdue
+            ? `${plural(group.late.size, "person", "people")} · ${plural(group.daysLate, "day", "days")} late`
+            : `Nothing overdue · next due ${fmtDay(group.nextDue)}`}
+        </small>
+      </span>
+      <span className="pm-hours">
+        {group.overdue > 0 && <b className="is-late">{fmtHours(group.overdue)} h overdue</b>}
+        {group.upcoming > 0 && <small>{fmtHours(group.upcoming)} h not due yet</small>}
+      </span>
+      {group.overdue > 0 ? <Button className="text-button" onClick={onNudge}>Nudge</Button> : <span />}
+    </div>
+  );
 }
 
 function HoursOverview() {
@@ -2612,17 +2654,7 @@ function HoursOverview() {
   const search = query.trim().toLowerCase();
   const visible = rows.filter(tests[filter]).filter((row) => !search || `${row.person.name} ${row.person.role} ${row.person.pm}`.toLowerCase().includes(search));
 
-  const byPm = Object.entries(
-    rows.reduce<Record<string, { hours: number; people: number; oldest: string }>>((groups, row) => {
-      if (!row.stats.waiting) return groups;
-      const oldest = hoursEntries
-        .filter((entry) => entry.person === row.person.id && entry.status === "submitted" && entry.date >= period.start && entry.date <= period.end)
-        .reduce((min, entry) => (entry.date < min ? entry.date : min), "9999");
-      const group = groups[row.person.pm] ?? { hours: 0, people: 0, oldest: "9999" };
-      groups[row.person.pm] = { hours: group.hours + row.stats.waiting, people: group.people + 1, oldest: oldest < group.oldest ? oldest : group.oldest };
-      return groups;
-    }, {}),
-  ).sort((a, b) => b[1].hours - a[1].hours);
+  const byPm = pmQueue(rows);
 
   const log = [
     ...Object.entries(locks).map(([key, item]) => ({
@@ -2870,12 +2902,7 @@ function HoursOverview() {
           </div>
           {byPm.length ? (
             byPm.map(([pm, group]) => (
-              <div className="ho-pm" key={pm}>
-                <Avatar name={pm} size="small" />
-                <span className="case-cell"><strong>{pm}</strong><small>{plural(group.people, "person", "people")} · oldest {fmtDay(group.oldest)}</small></span>
-                <strong className="ho-pm-hours">{fmtHours(group.hours)} h</strong>
-                <Button className="text-button" onClick={() => setToast(`Asked ${pm} to approve ${fmtHours(group.hours)} h.`)}>Nudge</Button>
-              </div>
+              <PmQueueRow className="ho-pm" group={group} key={pm} onNudge={() => setToast(`Asked ${pm} to approve ${fmtHours(group.overdue)} overdue h.`)} pm={pm} />
             ))
           ) : (
             <p className="tw-hint">Nothing is waiting for approval in this period.</p>
@@ -2983,14 +3010,18 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
   const deadline = monthDeadline(month);
   const cutoff = period.end;
   const locks: Record<string, MonthLock> = { "2026-09": { at: addDays(monthDeadline("2026-09"), 1), by: "Automatic" } };
-  const people = hoursPeople.map((person) => ({ person, stats: personHours(person, period, locks, cutoff) }));
+  const people = hoursPeople.map((person) => {
+    const stats = personHours(person, period, locks, cutoff);
+    return { person, stats, steps: nextSteps(person, stats) };
+  });
   const total = (pick: (row: (typeof people)[number]) => number) => people.reduce((sum, row) => sum + pick(row), 0);
   const expected = total((row) => row.stats.expected);
-  const reported = total((row) => row.stats.reported);
   const missing = total((row) => row.stats.missing);
   const afterLock = total((row) => row.stats.afterLock);
   const short = people.filter((row) => row.stats.missing > 0).length;
-  const pct = expected ? Math.round((reported / expected) * 100) : 0;
+  // Drafts haven't left the consultant's desk, so "in" means submitted, as in Hours overview.
+  const submitted = total((row) => row.stats.submitted);
+  const pct = expected ? Math.round((submitted / expected) * 100) : 0;
   const daysLeft = Math.max(0, Math.round((toDate(deadline).getTime() - toDate(TODAY).getTime()) / 86400000));
 
   const clientHours = hoursEntries.filter((entry) => monthOf(entry.date) === month && entry.kind === "client");
@@ -3009,20 +3040,8 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
   // Drafts haven't reached a project manager yet; only submitted time waits for one.
   const withPm = clientHours.filter((entry) => entry.status === "submitted").reduce((sum, entry) => sum + entry.hours, 0);
 
-  const queue = Object.entries(
-    hoursEntries
-      .filter((entry) => monthOf(entry.date) === month && entry.status === "submitted")
-      .reduce<Record<string, { hours: number; people: Set<string>; oldest: string }>>((groups, entry) => {
-        const pm = hoursPeople.find((person) => person.id === entry.person)?.pm ?? "?";
-        const group = groups[pm] ?? { hours: 0, people: new Set<string>(), oldest: "9999" };
-        group.hours += entry.hours;
-        group.people.add(entry.person);
-        if (entry.date < group.oldest) group.oldest = entry.date;
-        groups[pm] = group;
-        return groups;
-      }, {}),
-  ).sort((a, b) => b[1].hours - a[1].hours);
-  const daysWaiting = (date: string) => Math.round((toDate(TODAY).getTime() - toDate(date).getTime()) / 86400000);
+  const queue = pmQueue(people);
+  const overdueWithPms = queue.reduce((sum, [, group]) => sum + group.overdue, 0);
 
   const overtime = overtimeForPayroll.filter((item) => item.month === month);
   const maxLate = Math.max(...lateHoursBefore.map(([, hours]) => hours));
@@ -3052,7 +3071,7 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
           </div>
           <div className="tw-figure">
             <strong className="tw-display">{pct}<small>%</small></strong>
-            <span className="tw-subtle">of hours in</span>
+            <span className="tw-subtle">of hours submitted</span>
           </div>
         </div>
         <div className="tw-line"><span style={{ width: `${Math.min(100, pct)}%` }} /></div>
@@ -3061,7 +3080,7 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
             <i className="tw-dot" />
             {locked
               ? `${monthName(month)} is closed. ${fmtHours(afterLock)} h came in after the lock, through unlocks with a reason.`
-              : `${plural(short, "person is", "people are")} still short ${fmtHours(missing)} h, and ${fmtHours(withPm)} h of client time waits for a project manager.`}
+              : `${plural(short, "person is", "people are")} still short ${fmtHours(missing)} h, and ${fmtHours(overdueWithPms)} h are overdue for approval with project managers.`}
           </span>
           <Button className="primary-button compact" onClick={() => onOpen("hours")}>{locked ? "See the lock log" : "See who"}</Button>
         </div>
@@ -3114,12 +3133,7 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
             <h3>Waiting for a project manager</h3>
             {queue.length ? (
               queue.map(([pm, group]) => (
-                <div className="fd-pm" key={pm}>
-                  <Avatar name={pm} size="small" />
-                  <span><strong>{pm}</strong><small>{plural(group.people.size, "person", "people")} · oldest {daysWaiting(group.oldest)} days</small></span>
-                  <b>{fmtHours(group.hours)} h</b>
-                  <Button className="tw-link" onClick={() => setToast(`Asked ${pm} to approve ${fmtHours(group.hours)} h.`)}>Nudge</Button>
-                </div>
+                <PmQueueRow className="fd-pm" group={group} key={pm} onNudge={() => setToast(`Asked ${pm} to approve ${fmtHours(group.overdue)} overdue h.`)} pm={pm} />
               ))
             ) : (
               <p className="tw-hint">Nothing waits for approval.</p>
