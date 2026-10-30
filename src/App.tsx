@@ -2662,6 +2662,13 @@ type NextStep = { who: "consultant" | "pm"; text: string; late: boolean; hours: 
 // Wednesday after. Anything not due yet is shown, but quietly; only overdue steps put someone behind.
 const period0 = (stats: HoursStats) => addDays(mondayOf(stats.days[0]?.date ?? TODAY), 7);
 
+// Weekdays grouped by week, so the day strip reads as a calendar: one block per week, Monday to Friday.
+function weekGroups<T extends { date: string }>(days: T[]): [string, T[]][] {
+  const groups = new Map<string, T[]>();
+  for (const day of days) groups.set(mondayOf(day.date), [...(groups.get(mondayOf(day.date)) ?? []), day]);
+  return [...groups.entries()];
+}
+
 // The step without who and when, for a reminder message: "Albin: submit week 44 · due Mon 2 Nov" → "submit week 44".
 const stepAction = (step?: NextStep) => (step ? step.text.replace(/^[^:]+: /, "").replace(/ · .*/, "") : "");
 
@@ -2680,7 +2687,7 @@ function nextSteps(person: HoursPerson, stats: HoursStats): NextStep[] {
   const hoursIn = (mondays: string[]) => stats.days.filter((day) => day.state === "none" && mondays.includes(mondayOf(day.date))).length * person.perDay;
   const hoursAt = (mondays: string[], status: HoursStatus) => stats.days.filter((day) => day.status === status && mondays.includes(mondayOf(day.date))).reduce((sum, day) => sum + day.hours, 0);
   for (const group of split(emptyWeeks, submitDue))
-    if (group.length) steps.push({ who: "consultant", text: `${first}: log ${fmtHours(hoursIn(group))} h in ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursIn(group), due: submitDue(group[0]) });
+    if (group.length) steps.push({ who: "consultant", text: `${first}: log ${fmtHours(hoursIn(group))} h in ${weeks(group)}${stats.gap >= 3 && stats.reported ? " (vacation?)" : ""} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursIn(group), due: submitDue(group[0]) });
   for (const group of split(stats.draftWeeks.filter((monday) => !emptyWeeks.includes(monday)), submitDue))
     if (group.length) steps.push({ who: "consultant", text: `${first}: submit ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursAt(group, "draft"), due: submitDue(group[0]) });
   for (const group of split(stats.waitingWeeks, approveDue))
@@ -2737,6 +2744,7 @@ function HoursOverview() {
   const [unlocks, setUnlocks] = useState(initialUnlocks);
   const [modal, setModal] = useState<"lock" | "unlock" | null>(null);
   const [unlockForm, setUnlockForm] = useState({ person: "", until: addDays(TODAY, 3), reason: "", error: "" });
+  const [showMessages, setShowMessages] = useState(false);
   const [toast, setToast] = useState("");
 
   const period = hoursPeriods.find((item) => item.key === periodKey) ?? hoursPeriods[0];
@@ -2966,7 +2974,18 @@ function HoursOverview() {
             <thead>
               <tr>
                 {sortHead("name", "Person")}
-                <th>Days</th>
+                <th className="ho-days-head">
+                  {/* The same calendar as the strips below: week numbers for a month, weekdays for a week. */}
+                  <div className={`ho-axis ${period.kind === "week" ? "is-week" : ""}`}>
+                    {weekGroups(rows[0]?.stats.days ?? []).map(([monday, days]) =>
+                      period.kind === "week" ? (
+                        days.map((day) => <span key={day.date}>{dayNames[dayIndex(day.date)].slice(0, 2)}</span>)
+                      ) : (
+                        <span key={monday} style={{ width: `${days.length * 9 - 2}px` }}>{days.length >= 3 ? `W${isoWeek(monday)}` : ""}</span>
+                      ),
+                    )}
+                  </div>
+                </th>
                 {sortHead("submitted", "Submitted")}
                 <th>Next step</th>
                 {sortHead("last", "Last time")}
@@ -2987,13 +3006,15 @@ function HoursOverview() {
                     </span>
                   </td>
                   <td>
-                    <div className="ho-days">
-                      {stats.days.map((day) => (
+                    <div className={`ho-days ${period.kind === "week" ? "is-week" : ""}`}>
+                      {weekGroups(stats.days).map(([monday, days]) => (
+                        <span className="ho-week" key={monday}>
+                      {days.map((day) => (
                         <i className={`ho-day ho-day--${day.state} ${day.status && day.state !== "absence" ? `is-${day.status}` : ""}`} key={day.date} title={`${fmtDay(day.date)}: ${day.state === "off" ? "not a working day" : day.state === "future" ? `not yet${day.hours ? ` (${fmtHours(day.hours)} h so far)` : ""}` : day.state === "absence" ? "vacation or absence" : `${fmtHours(day.hours)} h${day.status === "draft" ? ", not submitted" : day.status === "submitted" ? ", with the PM" : day.status === "approved" ? ", approved" : ""}`}`} />
                       ))}
+                        </span>
+                      ))}
                     </div>
-                    {stats.gap >= 3 && <small className="ho-tag" title={`${stats.gap} working days in a row with no time. Vacation not logged?`}>{stats.gap}-day gap</small>}
-                    {!stats.reported && stats.expected > 0 && <small className="ho-tag" title="Nothing reported for this period yet">Nothing yet</small>}
                   </td>
                   <td>
                     {/* Drafts haven't left the consultant's desk, so only submitted time counts. */}
@@ -3054,17 +3075,22 @@ function HoursOverview() {
           { when: "Tue 09:00", channel: "Teams", to: pmsDue.size ? [...pmsDue].join(", ") : "No PM", text: `Hours are waiting for your approval, due ${fmtDay(addDays(mondayOf(TODAY), 9))}. Approve normal weeks in one click and send back what's wrong.` },
           { when: "Thu 09:00", channel: "Email", to: pmsLate.size ? `${[...pmsLate].join(", ")}, Finance in copy` : "Nobody is late", text: "Some approvals are overdue, so these hours can't be invoiced yet. Please approve today, or name someone who can." },
         ];
+        const short = [`${plural(consultantsOpen.length, "consultant", "consultants")}`, `${plural(pmsDue.size, "PM", "PMs")}`, pmsLate.size ? `${plural(pmsLate.size, "late PM", "late PMs")} + Finance` : "nobody late"];
         return (
-          <section className="panel ho-reminders">
-            <div className="panel-heading">
-              <div><Heading level={2}>Automatic reminders</Heading><p>Sent every week to whoever's turn it is</p></div>
+          <section className="ho-reminders">
+            <div className="ho-reminders-head">
+              <strong>Automatic reminders</strong>
+              <Button className="text-button" onClick={() => setShowMessages(!showMessages)}>{showMessages ? "Hide messages" : "See messages"}</Button>
             </div>
-            {reminders.map((item) => (
-              <div className="ho-reminder" key={item.when}>
-                <small>{item.when} · {item.channel}</small>
-                <span><strong>To {item.to}</strong>"{item.text}"</span>
-              </div>
-            ))}
+            <div className="ho-reminders-row">
+              {reminders.map((item, index) => (
+                <div className="ho-reminder" key={item.when} title={`To ${item.to}`}>
+                  <small>{item.when} · {item.channel}</small>
+                  <strong>To {short[index]}</strong>
+                  {showMessages && <p className="ho-bubble">{item.text}</p>}
+                </div>
+              ))}
+            </div>
           </section>
         );
       })()}
