@@ -2642,7 +2642,6 @@ function HoursOverview() {
   }
 
   const pct = expected ? Math.round((reported / expected) * 100) : 0;
-  const scale = Math.max(...rows.map((row) => Math.max(row.stats.expected, row.stats.reported)), 1);
 
   return (
     <div className="calm">
@@ -2736,16 +2735,14 @@ function HoursOverview() {
               <tr>
                 {sortHead("name", "Person")}
                 <th>Days</th>
-                {sortHead("expected", "Expected", "r")}
-                {sortHead("reported", "Reported")}
+                {sortHead("reported", "Hours")}
                 {sortHead("missing", "Missing", "r")}
-                <th>Approval</th>
                 {sortHead("last", "Last time")}
                 <th />
               </tr>
             </thead>
             <tbody>
-              {!visible.length && <tr><td className="tw-empty" colSpan={8}>Nobody matches this filter.</td></tr>}
+              {!visible.length && <tr><td className="tw-empty" colSpan={6}>Nobody matches this filter.</td></tr>}
               {visible.map(({ person, stats, unlock }) => (
                 <tr key={person.id}>
                   <td>
@@ -2766,29 +2763,32 @@ function HoursOverview() {
                     {stats.gap >= 3 && <small className="ho-tag" title={`${stats.gap} working days in a row with no time. Vacation not logged?`}>{stats.gap}-day gap</small>}
                     {!stats.reported && stats.expected > 0 && <small className="ho-tag" title="Nothing reported for this period yet">Nothing yet</small>}
                   </td>
-                  <td className="r">
-                    {fmtHours(stats.expected)}
-                    {person.days.length * person.perDay < 40 && <small className="ho-sub">{Math.round((person.days.length * person.perDay) / 0.4)}% time</small>}
-                  </td>
                   <td>
-                    <div className="ho-bar" title={`Client ${fmtHours(stats.client)} h · Internal ${fmtHours(stats.internal)} h · Absence ${fmtHours(stats.absence)} h`}>
-                      <span className="ho-bar--client" style={{ width: `${(stats.client / scale) * 100}%` }} />
-                      <span className="ho-bar--internal" style={{ width: `${(stats.internal / scale) * 100}%` }} />
-                      <span className="ho-bar--absence" style={{ width: `${(stats.absence / scale) * 100}%` }} />
-                      <i style={{ left: `${(stats.expected / scale) * 100}%` }} />
+                    {/* One progress bar against the person's own expected hours, split by where the time is in approval. */}
+                    <div className="ho-progress-head">
+                      <strong>{fmtHours(stats.reported)}</strong>
+                      <span>of {fmtHours(stats.expected)} h{person.days.length * person.perDay < 40 ? ` · ${Math.round((person.days.length * person.perDay) / 0.4)}% time` : ""}</span>
                     </div>
-                    <small className="ho-sub">{fmtHours(stats.reported)} h{stats.internal ? ` · ${fmtHours(stats.internal)} internal` : ""}{stats.absence ? ` · ${fmtHours(stats.absence)} away` : ""}</small>
+                    <div className="ho-progress" title={`Client ${fmtHours(stats.client)} h · Internal ${fmtHours(stats.internal)} h · Absence ${fmtHours(stats.absence)} h`}>
+                      {(["approved", "waiting", "draft"] as const).map((part) => (
+                        <span className={`ho-progress--${part}`} key={part} style={{ width: `${stats.expected ? Math.min(100, (stats[part] / stats.expected) * 100) : 0}%` }} />
+                      ))}
+                    </div>
+                    <small className="ho-sub ho-progress-sub">
+                      {[
+                        stats.approved && !stats.waiting && !stats.draft ? "All approved" : stats.approved ? `${fmtHours(stats.approved)} approved` : "",
+                        stats.waiting ? `${fmtHours(stats.waiting)} with PM` : "",
+                        stats.draft ? `${fmtHours(stats.draft)} not submitted` : "",
+                      ].filter(Boolean).join(" · ")}
+                    </small>
+                    {(stats.afterLock > 0 || unlock) && (
+                      <div className="ho-badges">
+                        {stats.afterLock > 0 && <Badge tone="red">{fmtHours(stats.afterLock)} h after lock</Badge>}
+                        {unlock && <Badge tone="violet">Unlocked to {shortDate(unlock.until)}</Badge>}
+                      </div>
+                    )}
                   </td>
                   <td className={`r ho-missing ${stats.missing ? "is-short" : ""}`}>{stats.missing ? fmtHours(stats.missing) : "✓"}</td>
-                  <td>
-                    <div className="ho-badges">
-                      {stats.waiting > 0 && <Badge tone="blue">{fmtHours(stats.waiting)} h waiting</Badge>}
-                      {stats.draft > 0 && <Badge tone="amber">{fmtHours(stats.draft)} h draft</Badge>}
-                      {stats.afterLock > 0 && <Badge tone="red">{fmtHours(stats.afterLock)} h after lock</Badge>}
-                      {unlock && <Badge tone="violet">Unlocked to {shortDate(unlock.until)}</Badge>}
-                      {!stats.waiting && !stats.draft && !stats.afterLock && !unlock && stats.reported > 0 && <span className="ho-ok">Approved</span>}
-                    </div>
-                  </td>
                   <td className={stats.idle > 5 ? "ho-idle" : ""}>{stats.last ? shortDate(stats.last) : "–"}{stats.idle > 5 && <small className="ho-sub">{stats.idle} working days ago</small>}</td>
                   <td className="ho-actions">
                     {(stats.missing > 0 || stats.draft > 0) && <Button className="text-button" onClick={() => setToast(`Reminder sent to ${person.name}.`)}>Remind</Button>}
@@ -2805,10 +2805,10 @@ function HoursOverview() {
           <span><i className="ho-day ho-day--none" />No time</span>
           <span><i className="ho-day ho-day--absence" />Vacation or absence</span>
           <span><i className="ho-day ho-day--off" />Not a working day</span>
-          <span><i className="ho-day ho-day--future" />Not counted yet</span>
-          <span><i className="ho-bar-key ho-bar--client" />Client</span>
-          <span><i className="ho-bar-key ho-bar--internal" />Internal</span>
-          <span><i className="ho-bar-key ho-bar--absence" />Absence</span>
+          <span><i className="ho-day ho-day--future" />Not yet</span>
+          <span><i className="ho-bar-key ho-progress--approved" />Approved</span>
+          <span><i className="ho-bar-key ho-progress--waiting" />With PM</span>
+          <span><i className="ho-bar-key ho-progress--draft" />Not submitted</span>
         </div>
       </section>
 
