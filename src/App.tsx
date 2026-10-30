@@ -2509,7 +2509,7 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
 }
 
 type HoursStats = ReturnType<typeof personHours>;
-type NextStep = { who: "consultant" | "pm"; text: string; late: boolean };
+type NextStep = { who: "consultant" | "pm"; text: string; late: boolean; hours: number };
 
 // Whose turn it is. Invoicing uses approved hours only (Henry, 30 Oct), so a period is done when every working day is
 // submitted and approved. In a weekly rhythm consultants submit a week by the Monday after and PMs approve it by the
@@ -2524,15 +2524,16 @@ function nextSteps(person: HoursPerson, stats: HoursStats): NextStep[] {
   // Split weeks into overdue and not yet due, so each becomes its own step.
   const split = (mondays: string[], due: (monday: string) => string) => [mondays.filter((monday) => due(monday) < TODAY), mondays.filter((monday) => due(monday) >= TODAY)];
   const steps: NextStep[] = [];
-  if (stats.expected && !stats.reported) return [{ who: "consultant", text: `${first}: nothing logged yet`, late: true }];
+  if (stats.expected && !stats.reported) return [{ who: "consultant", text: `${first}: nothing logged yet`, late: true, hours: stats.expected }];
   const emptyWeeks = [...new Set(stats.days.filter((day) => day.state === "none").map((day) => mondayOf(day.date)))];
   const hoursIn = (mondays: string[]) => stats.days.filter((day) => day.state === "none" && mondays.includes(mondayOf(day.date))).length * person.perDay;
+  const hoursAt = (mondays: string[], status: HoursStatus) => stats.days.filter((day) => day.status === status && mondays.includes(mondayOf(day.date))).reduce((sum, day) => sum + day.hours, 0);
   for (const group of split(emptyWeeks, submitDue))
-    if (group.length) steps.push({ who: "consultant", text: `${first}: log ${fmtHours(hoursIn(group))} h in ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY });
+    if (group.length) steps.push({ who: "consultant", text: `${first}: log ${fmtHours(hoursIn(group))} h in ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursIn(group) });
   for (const group of split(stats.draftWeeks.filter((monday) => !emptyWeeks.includes(monday)), submitDue))
-    if (group.length) steps.push({ who: "consultant", text: `${first}: submit ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY });
+    if (group.length) steps.push({ who: "consultant", text: `${first}: submit ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursAt(group, "draft") });
   for (const group of split(stats.waitingWeeks, approveDue))
-    if (group.length) steps.push({ who: "pm", text: `${person.pm}: approve ${weeks(group)} · ${when(approveDue(group[0]))}`, late: approveDue(group[0]) < TODAY });
+    if (group.length) steps.push({ who: "pm", text: `${person.pm}: approve ${weeks(group)} · ${when(approveDue(group[0]))}`, late: approveDue(group[0]) < TODAY, hours: hoursAt(group, "submitted") });
   return steps;
 }
 
@@ -2583,11 +2584,12 @@ function HoursOverview() {
   const draft = total((row) => row.stats.draft);
   const afterLock = total((row) => row.stats.afterLock);
   const behind = (row: (typeof rows)[number], who: NextStep["who"]) => row.steps.some((step) => step.who === who && step.late);
-  const onTrack = rows.filter((row) => !row.steps.some((step) => step.late)).length;
   const consultantTurn = rows.filter((row) => behind(row, "consultant"));
   const pmTurn = rows.filter((row) => behind(row, "pm"));
   const pmsWaiting = new Set(pmTurn.map((row) => row.person.pm));
-  const pmLateHours = total((row) => (behind(row, "pm") ? row.stats.waiting : 0));
+  // Hours per owner, split into overdue and not due yet, so the tiles add up to what the rows say.
+  const stepHours = (who: NextStep["who"], late: boolean) => total((row) => row.steps.filter((step) => step.who === who && step.late === late).reduce((sum, step) => sum + step.hours, 0));
+  const allPms = new Set(rows.map((row) => row.person.pm));
   const missingPeople = rows.filter((row) => row.stats.missing > 0);
 
   const tests: Record<HoursFilter, (row: (typeof rows)[number]) => boolean> = {
@@ -2601,9 +2603,8 @@ function HoursOverview() {
   };
   const filters: { key: HoursFilter; label: string }[] = [
     { key: "all", label: "Everyone" },
-    { key: "done", label: "On track" },
     { key: "consultant", label: "Consultant behind" },
-    { key: "pm", label: "PM behind" },
+    { key: "pm", label: "Late approval" },
     { key: "empty", label: "Gaps, vacation not logged?" },
     { key: "inactive", label: "No time for 7 days" },
     { key: "afterLock", label: "Added after lock" },
@@ -2738,20 +2739,15 @@ function HoursOverview() {
           <small>{fmtHours(approved)} h ready to invoice</small>
           <div className="progress"><span style={{ width: `${Math.min(100, pctOf(approved))}%` }} /></div>
         </article>
-        <article className="ho-tile">
-          <span>On track</span>
-          <strong className="tw-display">{onTrack} of {rows.length}</strong>
-          <small>nothing overdue</small>
-        </article>
         <article className={`ho-tile ${consultantTurn.length ? "is-alert" : ""}`}>
           <span>Consultants behind</span>
-          <strong className="tw-display">{consultantTurn.length}</strong>
-          <small>{fmtHours(missing)} h missing · {fmtHours(draft)} h not submitted</small>
+          <strong className="tw-display">{consultantTurn.length} of {rows.length}</strong>
+          <small>{fmtHours(stepHours("consultant", true))} h overdue{stepHours("consultant", false) ? ` · ${fmtHours(stepHours("consultant", false))} h not due yet` : ""}</small>
         </article>
-        <article className={`ho-tile ${pmLateHours ? "is-alert" : ""}`}>
+        <article className={`ho-tile ${pmsWaiting.size ? "is-alert" : ""}`}>
           <span>PMs behind</span>
-          <strong className="tw-display">{fmtHours(pmLateHours)} h</strong>
-          <small>{pmsWaiting.size ? `${[...pmsWaiting].join(", ")} · ${fmtHours(waiting)} h with PMs in all` : `${fmtHours(waiting)} h with PMs, none overdue`}</small>
+          <strong className="tw-display">{pmsWaiting.size} of {allPms.size}</strong>
+          <small>{fmtHours(stepHours("pm", true))} h overdue{stepHours("pm", false) ? ` · ${fmtHours(stepHours("pm", false))} h not due yet` : ""}</small>
         </article>
         {month && lock && (
           <article className={`ho-tile ${afterLock ? "is-alert" : ""}`}>
