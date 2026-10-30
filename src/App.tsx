@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Button, Heading, TextInput } from "./ui";
 
 type IconName =
@@ -2501,7 +2501,7 @@ type HoursPerson = {
 type HoursPeriod = { key: string; kind: "month" | "week"; label: string; start: string; end: string };
 type DayState = "full" | "partial" | "none" | "absence" | "off" | "future";
 type HoursSort = "name" | "submitted" | "last";
-type HoursFilter = "all" | "consultant" | "pm" | "done" | "inactive" | "afterLock" | "empty";
+type HoursFilter = "all" | "behind" | "consultant" | "pm" | "done" | "inactive" | "afterLock" | "empty";
 type MonthLock = { at: string; by: string };
 type Unlock = { person: string; month: string; until: string; reason: string; at: string; by: string };
 
@@ -2696,7 +2696,7 @@ function nextSteps(person: HoursPerson, stats: HoursStats): NextStep[] {
   // Split weeks into overdue and not yet due, so each becomes its own step.
   const split = (mondays: string[], due: (monday: string) => string) => [mondays.filter((monday) => due(monday) < TODAY), mondays.filter((monday) => due(monday) >= TODAY)];
   const steps: NextStep[] = [];
-  if (stats.expected && !stats.reported) return [{ who: "consultant", text: `${first}: nothing logged yet`, late: true, hours: stats.expected, due: period0(stats) }];
+  if (stats.expected && !stats.reported) return [{ who: "consultant", text: `${first}: nothing logged ${stats.last ? `since ${shortDate(stats.last)}` : "yet"}`, late: true, hours: stats.expected, due: period0(stats) }];
   const emptyWeeks = [...new Set(stats.days.filter((day) => day.state === "none").map((day) => mondayOf(day.date)))];
   const hoursIn = (mondays: string[]) => stats.days.filter((day) => day.state === "none" && mondays.includes(mondayOf(day.date))).length * person.perDay;
   const hoursAt = (mondays: string[], status: HoursStatus) => stats.days.filter((day) => day.status === status && mondays.includes(mondayOf(day.date))).reduce((sum, day) => sum + day.hours, 0);
@@ -2758,6 +2758,23 @@ function HoursOverview() {
   const [unlocks, setUnlocks] = useState(initialUnlocks);
   const [modal, setModal] = useState<"lock" | "unlock" | null>(null);
   const [unlockForm, setUnlockForm] = useState({ person: "", until: addDays(TODAY, 3), reason: "", error: "" });
+  // The week columns are opt-in; the choice is remembered in this browser.
+  const [showWeeks, setShowWeeks] = useState(() => {
+    try {
+      return localStorage.getItem("ho-show-weeks") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [openRow, setOpenRow] = useState<string | null>(null);
+  function toggleWeeks() {
+    setShowWeeks(!showWeeks);
+    try {
+      localStorage.setItem("ho-show-weeks", showWeeks ? "0" : "1");
+    } catch {
+      // Private window or blocked storage: the toggle still works for this visit.
+    }
+  }
   const [showMessages, setShowMessages] = useState(false);
   const [toast, setToast] = useState("");
 
@@ -2784,6 +2801,7 @@ function HoursOverview() {
     period.kind === "week"
       ? allDays.map((day) => [day.date, [day.date], `${dayNames[dayIndex(day.date)].slice(0, 3)} ${Number(day.date.slice(8))}`])
       : weekGroups(allDays).map(([monday, days]) => [monday, days.map((day) => day.date), `W${isoWeek(monday)}`]);
+  const tableCols = 4 + (showWeeks ? units.length : 0);
   const sortBy = (key: HoursSort) => setSort(sort.key === key ? { key, dir: sort.dir === 1 ? -1 : 1 } : { key, dir: key === "name" ? 1 : -1 });
   const sortHead = (key: HoursSort, label: string, className = "") => (
     <th aria-sort={sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : "none"} className={className}>
@@ -2813,6 +2831,7 @@ function HoursOverview() {
 
   const tests: Record<HoursFilter, (row: (typeof rows)[number]) => boolean> = {
     all: () => true,
+    behind: (row) => row.steps.some((step) => step.late),
     consultant: (row) => behind(row, "consultant"),
     pm: (row) => behind(row, "pm"),
     done: (row) => !row.steps.some((step) => step.late),
@@ -2822,10 +2841,8 @@ function HoursOverview() {
   };
   const filters: { key: HoursFilter; label: string }[] = [
     { key: "all", label: "Everyone" },
-    { key: "consultant", label: "Consultant behind" },
-    { key: "pm", label: "Late approval" },
+    { key: "behind", label: "Behind" },
     { key: "empty", label: "Gaps, vacation not logged?" },
-    { key: "inactive", label: "No time for 7 days" },
     { key: "afterLock", label: "Added after lock" },
   ];
   const search = query.trim().toLowerCase();
@@ -2969,9 +2986,16 @@ function HoursOverview() {
 
       <section className="panel table-panel">
         <div className="panel-heading">
-          <div>
+          <div className="ho-title">
             <Heading level={2}>People</Heading>
-            <p>Only approved hours are invoiced. Each week: consultants submit by the Monday after, PMs approve by the Wednesday after. On track = nothing overdue; done = all approved.</p>
+            <span
+              aria-label="How this works"
+              className="ho-info"
+              tabIndex={0}
+              title="Only approved hours are invoiced. Each week consultants submit by the Monday after and PMs approve by the Wednesday after. On track = nothing overdue; done = everything approved. Click a person for the details."
+            >
+              ⓘ
+            </span>
           </div>
           <label className="search-field">
             <Icon name="search" size={15} />
@@ -2985,8 +3009,12 @@ function HoursOverview() {
             </button>
           ))}
           <span className="ho-remind-all">
-            {consultantTurn.length > 0 && <Button className="text-button" onClick={() => setToast(`Reminder sent to ${plural(consultantTurn.length, "consultant", "consultants")} who are behind.`)}>Remind consultants</Button>}
-            {pmsWaiting.size > 0 && <Button className="text-button" onClick={() => setToast(`Asked ${plural(pmsWaiting.size, "project manager", "project managers")} to approve.`)}>Nudge PMs</Button>}
+            {filter === "behind" && (consultantTurn.length > 0 || pmsWaiting.size > 0) && (
+              <Button className="text-button" onClick={() => setToast(`Sent in Teams to ${plural(consultantTurn.length, "consultant", "consultants")} and ${plural(pmsWaiting.size, "PM", "PMs")} who are behind.`)}>
+                Remind all
+              </Button>
+            )}
+            <Button aria-pressed={showWeeks} className="text-button" onClick={toggleWeeks}>{showWeeks ? "Hide" : "Show"} {period.kind === "week" ? "days" : "weeks"}</Button>
           </span>
         </div>
         <div className="table-scroll">
@@ -2994,81 +3022,123 @@ function HoursOverview() {
             <thead>
               <tr>
                 {sortHead("name", "Person")}
-                {/* One column per week (a month) or per day (a week): the unit people submit and PMs approve. */}
-                {units.map(([key, , label]) => (
-                  <th className="ho-unit-head" key={key}>{label}</th>
-                ))}
+                {/* One column per week (a month) or per day (a week), only when asked for. */}
+                {showWeeks && units.map(([key, , label]) => <th className="ho-unit-head" key={key}>{label}</th>)}
                 {sortHead("submitted", "Submitted")}
-                <th>Next step</th>
-                {sortHead("last", "Last time")}
+                <th>Status</th>
                 <th />
               </tr>
             </thead>
             <tbody>
-              {!visible.length && <tr><td className="tw-empty" colSpan={5 + units.length}>Nobody matches this filter.</td></tr>}
-              {visible.map(({ person, stats, steps, unlock }) => (
-                <tr key={person.id}>
-                  <td>
-                    <span className="company-cell">
-                      <Avatar name={person.name} size="small" />
-                      <span className="case-cell">
-                        <strong>{person.name}</strong>
-                        <small>{person.role} · {person.unit} · PM {person.pm}</small>
-                      </span>
-                    </span>
-                  </td>
-                  {units.map(([key, dates]) => {
-                    const unit = unitStatus(stats.days.filter((day) => dates.includes(day.date)), person.perDay);
-                    return (
-                      <td className="ho-unit" key={key} title={unit.title}>
-                        <span className={`ho-unit-chip is-${unit.tone}`}>{unit.label}</span>
+              {!visible.length && <tr><td className="tw-empty" colSpan={tableCols}>Nobody matches this filter.</td></tr>}
+              {visible.map(({ person, stats, steps, unlock }) => {
+                const late = steps.filter((step) => step.late);
+                const open = openRow === person.id;
+                const unitsFor = units.map(([key, dates, label]) => {
+                  const days = stats.days.filter((day) => dates.includes(day.date));
+                  return { key, head: label, hours: days.reduce((sum, day) => sum + day.hours, 0), ...unitStatus(days, person.perDay) };
+                });
+                return (
+                  <Fragment key={person.id}>
+                    <tr aria-expanded={open} className={`ho-row ${open ? "is-open" : ""}`} onClick={() => setOpenRow(open ? null : person.id)}>
+                      <td>
+                        <span className="company-cell">
+                          <Avatar name={person.name} size="small" />
+                          <span className="case-cell">
+                            <strong>{person.name}</strong>
+                            <small>PM {person.pm}</small>
+                          </span>
+                          <i className="ho-chevron" aria-hidden="true">›</i>
+                        </span>
                       </td>
-                    );
-                  })}
-                  <td>
-                    {/* Drafts haven't left the consultant's desk, so only submitted time counts. */}
-                    <div className="ho-progress-head">
-                      <strong>{fmtHours(stats.submitted)}</strong>
-                      <span>of {fmtHours(stats.expected)} h{person.days.length * person.perDay < 40 ? ` · ${Math.round((person.days.length * person.perDay) / 0.4)}% time` : ""}</span>
-                    </div>
-                    <div className="ho-progress" title={`Client ${fmtHours(stats.client)} h · Internal ${fmtHours(stats.internal)} h · Absence ${fmtHours(stats.absence)} h`}>
-                      {(["approved", "waiting", "draft"] as const).map((part) => (
-                        <span className={`ho-progress--${part}`} key={part} style={{ width: `${stats.expected ? Math.min(100, (stats[part] / stats.expected) * 100) : 0}%` }} />
-                      ))}
-                    </div>
-                    <small className="ho-sub ho-progress-sub">{stats.approved && stats.approved === stats.submitted ? "All approved" : `${fmtHours(stats.approved)} approved`}</small>
-                    {(stats.afterLock > 0 || unlock) && (
-                      <div className="ho-badges">
-                        {stats.afterLock > 0 && <Badge tone="red">{fmtHours(stats.afterLock)} h after lock</Badge>}
-                        {unlock && <Badge tone="violet">Unlocked to {shortDate(unlock.until)}</Badge>}
-                      </div>
+                      {showWeeks &&
+                        unitsFor.map((unit) => (
+                          <td className="ho-unit" key={unit.key} title={unit.title}>
+                            <span className={`ho-unit-chip is-${unit.tone}`}>{unit.label}</span>
+                          </td>
+                        ))}
+                      <td>
+                        {/* Drafts haven't left the consultant's desk, so only submitted time counts. */}
+                        <div className="ho-progress-head">
+                          <strong>{fmtHours(stats.submitted)}</strong>
+                          <span>/ {fmtHours(stats.expected)} h{person.days.length * person.perDay < 40 ? ` · ${Math.round((person.days.length * person.perDay) / 0.4)}%` : ""}</span>
+                        </div>
+                        <div className="ho-progress" title={`${fmtHours(stats.approved)} h approved · ${fmtHours(stats.waiting)} h with the PM · ${fmtHours(stats.draft)} h not submitted`}>
+                          {(["approved", "waiting", "draft"] as const).map((part) => (
+                            <span className={`ho-progress--${part}`} key={part} style={{ width: `${stats.expected ? Math.min(100, (stats[part] / stats.expected) * 100) : 0}%` }} />
+                          ))}
+                        </div>
+                        {(stats.afterLock > 0 || unlock) && (
+                          <div className="ho-badges">
+                            {stats.afterLock > 0 && <Badge tone="red">{fmtHours(stats.afterLock)} h after lock</Badge>}
+                            {unlock && <Badge tone="violet">Unlocked to {shortDate(unlock.until)}</Badge>}
+                          </div>
+                        )}
+                      </td>
+                      <td className="ho-steps">
+                        {/* Only what's overdue; the rest is normal and sits in the details. */}
+                        {late.length ? (
+                          late.map((step) => <span className={`ho-step ho-step--${step.who} is-late`} key={step.text}>{step.text}</span>)
+                        ) : (
+                          <span className="ho-step is-done">✓ {steps.length ? "On track" : "Done"}</span>
+                        )}
+                      </td>
+                      <td className="ho-actions" onClick={(event) => event.stopPropagation()}>
+                        {late.some((step) => step.who === "consultant") && <Button className="text-button" onClick={() => setToast(`Sent in Teams to ${person.name}: "Reminder: ${stepAction(late.find((step) => step.who === "consultant"))}."`)}>Remind</Button>}
+                        {late.some((step) => step.who === "pm") && <Button className="text-button" onClick={() => setToast(`Sent in Teams to ${person.pm}: "Please ${stepAction(late.find((step) => step.who === "pm"))} for ${person.name}. It's overdue."`)}>Nudge PM</Button>}
+                        {month && lock && !unlock && <Button className="text-button" onClick={() => openUnlock(person.id)}>Unlock</Button>}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr className="ho-detail-row">
+                        <td colSpan={tableCols}>
+                          <div className="ho-detail">
+                            <p className="ho-detail-meta">
+                              {person.role} · {person.unit} · PM {person.pm} · last time {stats.last ? fmtDay(stats.last) : "never"} · {fmtHours(stats.approved)} h approved · {fmtHours(stats.waiting)} h with the PM · {fmtHours(stats.draft)} h not submitted
+                            </p>
+                            <div className="ho-detail-weeks">
+                              {unitsFor.map((unit) => (
+                                <div className="ho-detail-week" key={unit.key} title={unit.title}>
+                                  <small>{unit.head}</small>
+                                  <span className={`ho-unit-chip is-${unit.tone}`}>{unit.label}</span>
+                                  <b>{fmtHours(unit.hours)} h</b>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="ho-detail-steps">
+                              {steps.length ? (
+                                steps.map((step) => <span className={`ho-step ho-step--${step.who} ${step.late ? "is-late" : "is-upcoming"}`} key={step.text}>{step.text}</span>)
+                              ) : (
+                                <span className="ho-step is-done">✓ Everything submitted and approved</span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
                     )}
-                  </td>
-                  <td className="ho-steps">
-                    {!steps.length && <span className="ho-step is-done">✓ Done</span>}
-                    {steps.length > 0 && !steps.some((step) => step.late) && <span className="ho-step is-done">✓ On track</span>}
-                    {steps.map((step) => (
-                      <span className={`ho-step ho-step--${step.who} ${step.late ? "is-late" : "is-upcoming"}`} key={step.text}>{step.text}</span>
-                    ))}
-                  </td>
-                  <td className={stats.idle > 5 ? "ho-idle" : ""}>{stats.last ? shortDate(stats.last) : "–"}{stats.idle > 5 && <small className="ho-sub">{stats.idle} working days ago</small>}</td>
-                  <td className="ho-actions">
-                    {steps.some((step) => step.who === "consultant" && step.late) && <Button className="text-button" onClick={() => setToast(`Sent in Teams to ${person.name}: "Reminder: ${stepAction(steps.find((step) => step.who === "consultant"))}."`)}>Remind</Button>}
-                    {steps.some((step) => step.who === "pm" && step.late) && <Button className="text-button" onClick={() => setToast(`Sent in Teams to ${person.pm}: "Please ${stepAction(steps.find((step) => step.who === "pm" && step.late))} for ${person.name}. It's overdue."`)}>Nudge PM</Button>}
-                    {month && lock && !unlock && <Button className="text-button" onClick={() => openUnlock(person.id)}>Unlock</Button>}
-                  </td>
-                </tr>
-              ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
         <div className="ho-legend">
-          <span><b className="ho-unit-chip is-done">✓</b>Approved</span>
-          <span><b className="ho-unit-chip is-pm">With PM</b>Submitted, waiting for approval</span>
-          <span><b className="ho-unit-chip is-draft">Draft</b>Logged, not submitted</span>
-          <span><b className="ho-unit-chip is-missing">−8 h</b>Hours missing</span>
-          <span><b className="ho-unit-chip is-away">Away</b>Vacation or absence</span>
-          <span><b className="ho-unit-chip is-future">–</b>Not yet</span>
+          {showWeeks ? (
+            <>
+              <span><b className="ho-unit-chip is-done">✓</b>Approved</span>
+              <span><b className="ho-unit-chip is-pm">With PM</b>Waiting for approval</span>
+              <span><b className="ho-unit-chip is-draft">Draft</b>Not submitted</span>
+              <span><b className="ho-unit-chip is-missing">−8 h</b>Hours missing</span>
+              <span><b className="ho-unit-chip is-away">Away</b>Vacation or absence</span>
+              <span><b className="ho-unit-chip is-future">–</b>Not yet</span>
+            </>
+          ) : (
+            <>
+              <span><i className="ho-bar-key ho-progress--approved" />Approved</span>
+              <span><i className="ho-bar-key ho-progress--waiting" />With the PM</span>
+              <span><i className="ho-bar-key ho-progress--draft" />Not submitted</span>
+            </>
+          )}
         </div>
       </section>
 
