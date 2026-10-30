@@ -366,11 +366,13 @@ function Sidebar({
   onChange,
   open,
   onClose,
+  approvals,
 }: {
   page: Page;
   onChange: (page: Page) => void;
   open: boolean;
   onClose: () => void;
+  approvals: number;
 }) {
   return (
     <>
@@ -398,7 +400,7 @@ function Sidebar({
                   {item.icon && <Icon name={item.icon} />}
                   <span>{item.label}</span>
                   {item.id === "service" && <span className="nav-count">8</span>}
-                  {item.id === "approvals" && <span className="nav-count nav-count--sand">6</span>}
+                  {item.id === "approvals" && approvals > 0 && <span className="nav-count nav-count--sand">{approvals}</span>}
                   {item.id === "leads" && <span className="nav-count nav-count--sand">3</span>}
                 </Button>
               ))}
@@ -418,7 +420,7 @@ function Sidebar({
           </Button>
           <div className="profile">
             <span className="avatar">PO</span>
-            <span className="profile-copy"><strong>Philip Oxelius</strong><small>Sales Director</small></span>
+            <span className="profile-copy"><strong>Philip Oxelius</strong><small>Project manager</small></span>
             <span className="online-dot" />
           </div>
         </div>
@@ -1123,7 +1125,7 @@ const initialTimeEntries: TimeEntry[] = [
   seed("2026-10-21", "nova", "client_work", 8, "rejected", { pmComment: "Wrong project. Wednesday was the CRM migration workshop. /Johanna, PM" }),
   seed("2026-10-22", "crm", "client_work", 8, "submitted", { task: "Build", customerText: "Integration tests with SAP" }),
   seed("2026-10-23", "crm", "client_work", 6, "submitted", { task: "Build", customerText: "Fixed field mapping defects" }),
-  seed("2026-10-23", "internal", "internal_development", 2, "submitted", { comment: "Azure certification, module 3" }),
+  seed("2026-10-23", "internal", "internal_development", 2, "approved", { comment: "Azure certification, module 3" }),
   seed("2026-10-24", "nova", "overtime", 3, "submitted", { comment: "Go-live cutover", preApprovedBy: "Johanna S." }),
   // Week 44, this week: drafts up to Wednesday, today still empty. The CRM entry still lacks its customer text.
   seed("2026-10-26", "nova", "client_work", 8, "draft"),
@@ -1642,7 +1644,8 @@ function TimeEntries({ entries, setEntries: saveEntries, weekStart, setWeekStart
 
   function submitWeek() {
     const ids = new Set(toSubmit.map((entry) => entry.id));
-    setEntries(entries.map((entry) => (ids.has(entry.id) ? { ...entry, status: "submitted" as EntryStatus } : entry)));
+    // Customer time goes to the project's PM; internal time and absence count as approved once submitted.
+    setEntries(entries.map((entry) => (ids.has(entry.id) ? { ...entry, status: (projectOf(entry.project)?.kind === "client" ? "submitted" : "approved") as EntryStatus } : entry)));
     setModal(null);
     setToast(`${weekLabel} is submitted. Your project managers can now approve it.`);
   }
@@ -2461,7 +2464,20 @@ function TimeEntries({ entries, setEntries: saveEntries, weekStart, setWeekStart
 
 type HoursKind = "client" | "internal" | "absence";
 type HoursStatus = "draft" | "submitted" | "approved";
-type HoursEntry = { person: string; date: string; hours: number; kind: HoursKind; status: HoursStatus; created: string };
+// One line of time. "rejected" = sent back by the PM; it counts as the consultant's turn, like a draft.
+type HoursEntry = {
+  id: number;
+  person: string;
+  date: string;
+  hours: number;
+  kind: HoursKind;
+  status: HoursStatus | "rejected";
+  created: string;
+  note?: string;
+  comment?: string;
+  recalled?: boolean;
+  financeRequest?: string;
+};
 type HoursPerson = {
   id: string;
   name: string;
@@ -2480,6 +2496,8 @@ type HoursPerson = {
   pending?: boolean;
   drafts?: boolean;
   late?: { from: string; to: string; created: string }[];
+  // The signed-in user: their time comes from Time entries, not from the made-up generator.
+  self?: boolean;
 };
 type HoursPeriod = { key: string; kind: "month" | "week"; label: string; start: string; end: string };
 type DayState = "full" | "partial" | "none" | "absence" | "off" | "future";
@@ -2501,39 +2519,50 @@ type Unlock = { person: string; month: string; until: string; reason: string; at
 
 const fullWeek = [0, 1, 2, 3, 4];
 
+// The signed-in user. Philip reports his own time (approved by Johanna S.) and is the PM for his own team below.
+const ME = { id: "po", name: "Philip Oxelius", pm: "Philip O." };
+
 const hoursPeople: HoursPerson[] = [
+  { id: ME.id, name: ME.name, role: "Project manager", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly", self: true },
   { id: "on", name: "Oliver Nyström", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "daily" },
   { id: "vl", name: "Viktor Larsson", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly" },
   { id: "sa", name: "Sara Ahmed", role: "Consultant", unit: "SE", pm: "Mikael K.", days: [0, 1, 2, 3], perDay: 8, habit: "daily" },
   { id: "mk", name: "Maja Karlsson", role: "Senior consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly" },
-  { id: "nb", name: "Noah Berg", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", vacation: [["2026-10-12", "2026-10-16"]] },
+  { id: "nb", name: "Noah Berg", role: "Consultant", unit: "SE", pm: "Philip O.", days: fullWeek, perDay: 8, habit: "weekly", vacation: [["2026-10-12", "2026-10-16"]] },
   { id: "eh", name: "Elias Holm", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "daily", gaps: [["2026-09-28", "2026-09-30"]], late: [{ from: "2026-09-28", to: "2026-09-30", created: "2026-10-06" }] },
-  { id: "al", name: "Alva Lindqvist", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", gaps: [["2026-10-05", "2026-10-09"]] },
+  { id: "al", name: "Alva Lindqvist", role: "Consultant", unit: "SE", pm: "Philip O.", days: fullWeek, perDay: 8, habit: "weekly", gaps: [["2026-10-05", "2026-10-09"]] },
   { id: "hs", name: "Hugo Sandberg", role: "Architect", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "daily", pending: true },
   { id: "eb", name: "Ella Bergström", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 4, habit: "daily" },
-  { id: "le", name: "Liam Ekström", role: "Consultant", unit: "IT", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", drafts: true },
+  { id: "le", name: "Liam Ekström", role: "Consultant", unit: "IT", pm: "Philip O.", days: fullWeek, perDay: 8, habit: "weekly", drafts: true },
   { id: "ws", name: "Wilma Sjöberg", role: "Business developer", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "daily", internal: 8 },
   { id: "lf", name: "Lucas Forsberg", role: "Consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly", inactiveFrom: "2026-10-26" },
-  { id: "se", name: "Saga Engström", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "daily", internal: 1 },
+  { id: "se", name: "Saga Engström", role: "Consultant", unit: "SE", pm: "Philip O.", days: fullWeek, perDay: 8, habit: "daily", internal: 1 },
   { id: "ad", name: "Adam Lund", role: "Senior consultant", unit: "US", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "monthly" },
   { id: "fn", name: "Freja Nordin", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly" },
-  { id: "lh", name: "Leo Hedlund", role: "Consultant", unit: "SE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "daily", sick: [["2026-10-20", "2026-10-21"]] },
-  { id: "aw", name: "Alice Wikström", role: "Consultant", unit: "AE", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "weekly", pending: true },
+  { id: "lh", name: "Leo Hedlund", role: "Consultant", unit: "SE", pm: "Philip O.", days: fullWeek, perDay: 8, habit: "daily", sick: [["2026-10-20", "2026-10-21"]] },
+  { id: "aw", name: "Alice Wikström", role: "Consultant", unit: "AE", pm: "Philip O.", days: fullWeek, perDay: 8, habit: "weekly", pending: true },
   { id: "od", name: "Oscar Dahl", role: "Consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "daily" },
   { id: "eg", name: "Ebba Holmgren", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly", gaps: [["2026-09-21", "2026-09-25"]] },
-  { id: "is", name: "Isak Söderberg", role: "Consultant", unit: "IT", pm: "Sofia L.", days: fullWeek, perDay: 8, habit: "daily" },
+  { id: "is", name: "Isak Söderberg", role: "Consultant", unit: "IT", pm: "Philip O.", days: fullWeek, perDay: 8, habit: "daily" },
   { id: "nf", name: "Nora Fransson", role: "Project manager", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly", internal: 2 },
   { id: "as", name: "Albin Strand", role: "Consultant", unit: "SE", pm: "Johanna S.", days: fullWeek, perDay: 8, habit: "weekly", gaps: [["2026-09-14", "2026-09-18"]], late: [{ from: "2026-09-14", to: "2026-09-18", created: "2026-10-14" }] },
-  { id: "ta", name: "Tilde Axelsson", role: "Consultant", unit: "SE", pm: "Sofia L.", days: [0, 1, 2, 3], perDay: 8, habit: "daily" },
+  { id: "ta", name: "Tilde Axelsson", role: "Consultant", unit: "SE", pm: "Philip O.", days: [0, 1, 2, 3], perDay: 8, habit: "daily" },
   { id: "me", name: "Melvin Ek", role: "Senior consultant", unit: "SE", pm: "Mikael K.", days: fullWeek, perDay: 8, habit: "weekly", vacation: [["2026-09-07", "2026-09-11"]], late: [{ from: "2026-10-26", to: "2026-10-30", created: "2026-11-02" }] },
 ];
 
 const inRanges = (date: string, ranges: [string, string][] = []) => ranges.some(([from, to]) => date >= from && date <= to);
 const fmtHours = (hours: number) => String(Math.round(hours * 10) / 10);
 
+const workNotes = ["Workshop with the customer", "Integration build", "Testing", "Data migration", "Documentation", "Bug fixing", "Sprint planning"];
+
+// Internal time and absence need no PM: they count as approved once submitted (proposal, 30 Oct, to confirm with Henry/Nellie).
+const needsPm = (kind: HoursKind) => kind === "client";
+
 function buildHours() {
   const entries: HoursEntry[] = [];
+  let id = 0;
   for (const person of hoursPeople) {
+    if (person.self) continue;
     for (let date = "2026-09-01"; date <= TODAY; date = addDays(date, 1)) {
       if (isWeekend(date) || !person.days.includes(dayIndex(date))) continue;
       const late = person.late?.find((item) => date >= item.from && date <= item.to);
@@ -2546,15 +2575,24 @@ function buildHours() {
       const behind = person.pm === "Mikael K." && week === 43;
       let status: HoursStatus = person.pending || late || behind ? "submitted" : week <= 43 ? "approved" : "submitted";
       if (person.drafts && date >= "2026-10-01") status = "draft";
-      const base = { person: person.id, date, status, created };
+      const line = (kind: HoursKind, hours: number): HoursEntry => ({
+        id: ++id,
+        person: person.id,
+        date,
+        hours,
+        kind,
+        created,
+        status: status === "submitted" && !needsPm(kind) ? "approved" : status,
+        note: kind === "client" ? workNotes[(dayIndex(date) + person.id.charCodeAt(0)) % workNotes.length] : undefined,
+      });
       if (inRanges(date, person.vacation) || inRanges(date, person.sick)) {
-        entries.push({ ...base, hours: person.perDay, kind: "absence" });
+        entries.push(line("absence", person.perDay));
         continue;
       }
       const worked = person.perDay - (person.short ?? 0);
       const internal = Math.min(worked, person.internal ?? 0);
-      if (worked > internal) entries.push({ ...base, hours: worked - internal, kind: "client" });
-      if (internal) entries.push({ ...base, hours: internal, kind: "internal" });
+      if (worked > internal) entries.push(line("client", worked - internal));
+      if (internal) entries.push(line("internal", internal));
     }
   }
   return entries;
@@ -2586,10 +2624,12 @@ function workdaysBetween(from: string, to: string) {
 
 // Working days up to the cutoff are expected. A month always expects the whole month; a week expects the days so far.
 // Days that haven't come yet show as "not yet" but still count in a month.
-// extra: time Finance logged on someone's behalf in this session (e.g. vacation that wasn't logged).
-function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<string, MonthLock>, cutoff: string, extra: HoursEntry[] = []) {
-  const source = extra.length ? [...hoursEntries, ...extra] : hoursEntries;
-  const list = source.filter((entry) => entry.person === person.id && entry.date >= period.start && entry.date <= period.end);
+// source: everyone's time, shared by Time entries, Approvals, Hours overview and the Finance dashboard.
+function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<string, MonthLock>, cutoff: string, source: HoursEntry[]) {
+  // A line the PM sent back is the consultant's turn again, so it counts as a draft here.
+  const list = source
+    .filter((entry) => entry.person === person.id && entry.date >= period.start && entry.date <= period.end)
+    .map((entry) => (entry.status === "rejected" ? { ...entry, status: "draft" as HoursStatus } : entry));
   const counted = list.filter((entry) => entry.date <= cutoff);
   const sum = (items: HoursEntry[]) => items.reduce((total, entry) => total + entry.hours, 0);
   const days: { date: string; state: DayState; hours: number; status?: HoursStatus }[] = [];
@@ -2756,7 +2796,7 @@ function PmQueueRow({ pm, group, onNudge, className }: { pm: string; group: Retu
   );
 }
 
-function HoursOverview() {
+function HoursOverview({ hours, onAddHours }: { hours: HoursEntry[]; onAddHours: (entries: HoursEntry[]) => void }) {
   const [periodKey, setPeriodKey] = useState("2026-10");
   const [filter, setFilter] = useState<HoursFilter>("all");
   const [query, setQuery] = useState("");
@@ -2766,7 +2806,6 @@ function HoursOverview() {
   const [modal, setModal] = useState<"lock" | "unlock" | "handle" | "work" | null>(null);
   const [handled, setHandled] = useState<Record<string, Handling>>({});
   const [personLog, setPersonLog] = useState<Record<string, LogLine[]>>(initialHoursLog);
-  const [extra, setExtra] = useState<HoursEntry[]>([]);
   const [handleForm, setHandleForm] = useState({ person: "", kind: "wait" as Handling["kind"], until: addDays(mondayOf(TODAY), 7), note: "", error: "" });
   const [work, setWork] = useState({ queue: [] as string[], index: 0, handled: 0, note: "" });
   const [unlockForm, setUnlockForm] = useState({ person: "", until: addDays(TODAY, 3), reason: "", error: "" });
@@ -2800,7 +2839,7 @@ function HoursOverview() {
   const cutoff = current && period.kind === "week" ? TODAY : period.end;
   const rows = hoursPeople
     .map((person) => {
-      const stats = personHours(person, period, locks, cutoff, extra);
+      const stats = personHours(person, period, locks, cutoff, hours);
       return { person, stats, steps: nextSteps(person, stats), unlock: unlocks.find((item) => item.person === person.id && item.month === month && item.until >= TODAY) };
     })
     .sort((a, b) => {
@@ -2961,7 +3000,7 @@ function HoursOverview() {
     const name = row.person.name;
     if (kind === "absence") {
       const days = absenceDays(row);
-      setExtra([...extra, ...days.map((day) => ({ person: row.person.id, date: day.date, hours: row.person.perDay, kind: "absence" as HoursKind, status: "approved" as HoursStatus, created: TODAY }))]);
+      onAddHours(days.map((day, index) => ({ id: 900000 + hours.length + index, person: row.person.id, date: day.date, hours: row.person.perDay, kind: "absence" as HoursKind, status: "approved" as HoursStatus, created: TODAY, note: "Logged by Finance" })));
       addLog(row.person.id, `Finance logged ${plural(days.length, "day", "days")} of absence on their behalf${note ? `: ${note}` : ""}`);
     } else addLog(row.person.id, handlingText({ kind, note, until, at: TODAY }));
     setHandled({ ...handled, [`${row.person.id}|${period.key}`]: { kind, note, until, at: nowAt() } });
@@ -3524,11 +3563,11 @@ const lateHoursBefore: [string, number][] = [["Nov", 114], ["Dec", 144], ["Jan",
 const overtimeForPayroll = [
   { person: "Hugo Sandberg", project: "CRM migration", hours: 4, approvedBy: "Mikael K.", month: "2026-09", status: "Approved" },
   { person: "Oliver Nyström", project: "Nova implementation", hours: 3, approvedBy: "Johanna S.", month: "2026-10", status: "Approved" },
-  { person: "Isak Söderberg", project: "Data platform", hours: 6, approvedBy: "Sofia L.", month: "2026-10", status: "Waiting for PM" },
+  { person: "Isak Söderberg", project: "Data platform", hours: 6, approvedBy: "Philip O.", month: "2026-10", status: "Waiting for PM" },
 ];
 const kr = (value: number) => `${Math.round(value).toLocaleString("sv-SE")} kr`;
 
-function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
+function FinanceDashboard({ onOpen, hours }: { onOpen: (page: Page) => void; hours: HoursEntry[] }) {
   const [month, setMonth] = useState("2026-10");
   const [toast, setToast] = useState("");
 
@@ -3545,7 +3584,7 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
   const cutoff = period.end;
   const locks: Record<string, MonthLock> = { "2026-09": { at: addDays(monthDeadline("2026-09"), 1), by: "Automatic" } };
   const people = hoursPeople.map((person) => {
-    const stats = personHours(person, period, locks, cutoff);
+    const stats = personHours(person, period, locks, cutoff, hours);
     return { person, stats, steps: nextSteps(person, stats) };
   });
   const total = (pick: (row: (typeof people)[number]) => number) => people.reduce((sum, row) => sum + pick(row), 0);
@@ -3558,7 +3597,7 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
   const pct = expected ? Math.round((submitted / expected) * 100) : 0;
   const daysLeft = Math.max(0, Math.round((toDate(deadline).getTime() - toDate(TODAY).getTime()) / 86400000));
 
-  const clientHours = hoursEntries.filter((entry) => monthOf(entry.date) === month && entry.kind === "client");
+  const clientHours = hours.filter((entry) => monthOf(entry.date) === month && entry.kind === "client");
   const customers = Object.values(
     clientHours.reduce<Record<string, { account: string; approved: number; waiting: number; value: number }>>((groups, entry) => {
       const project = projectFor(entry.person);
@@ -4151,8 +4190,73 @@ function doneStatus(item: ApprovalItem): { label: string; tone: string } {
   return item.lines.some((line) => line.status === "sent_back") ? { label: "Changes requested", tone: "amber" } : { label: "Approved", tone: "green" };
 }
 
-function Approvals() {
-  const [items, setItems] = useState<ApprovalItem[]>(initialApprovals);
+// Timesheets for Philip's team, built from the shared hours, one per person and week that has anything submitted. Philip's
+// own time isn't here: nobody approves their own hours.
+function teamSheets(entries: HoursEntry[]): ApprovalItem[] {
+  const recent = addDays(mondayOf(TODAY), -14);
+  const sheets: ApprovalItem[] = [];
+  hoursPeople
+    .filter((person) => person.pm === ME.pm && !person.self)
+    .forEach((person, index) => {
+      const mine = entries.filter((entry) => entry.person === person.id && entry.status !== "draft");
+      const project = projectFor(person.id);
+      for (const monday of [...new Set(mine.map((entry) => mondayOf(entry.date)))]) {
+        const week = mine.filter((entry) => mondayOf(entry.date) === monday);
+        // Older weeks that are fully approved are history, not work.
+        if (monday < recent && week.every((entry) => entry.status === "approved")) continue;
+        const sent = week.reduce((last, entry) => (entry.created > last ? entry.created : last), "");
+        const days = Math.max(0, Math.round((toDate(TODAY).getTime() - toDate(sent).getTime()) / 86400000));
+        const total = week.reduce((sum, entry) => sum + entry.hours, 0);
+        sheets.push({
+          id: (index + 1) * 1000 + isoWeek(monday),
+          type: "Timesheets",
+          name: person.name,
+          initials: person.name.split(" ").map((part) => part[0]).join(""),
+          title: `Week ${isoWeek(monday)} timesheet`,
+          detail: "",
+          project: project.name,
+          age: days ? `${days} d ago` : "today",
+          week: monday,
+          flag: total < person.days.length * person.perDay ? `Below ${person.days.length * person.perDay} h target` : undefined,
+          lines: week
+            .sort((a, b) => a.date.localeCompare(b.date))
+            .map((entry) => ({
+              id: entry.id,
+              date: entry.date,
+              what: entry.kind === "client" ? `${project.name} · Client work` : entry.kind === "internal" ? "Internal hours · Internal time" : "Vacation or absence",
+              hours: entry.hours,
+              billable: entry.kind === "client",
+              note: entry.note,
+              status: entry.status === "rejected" ? "sent_back" : (entry.status as LineStatus),
+              comment: entry.comment,
+              recalled: entry.recalled,
+              financeRequest: entry.financeRequest,
+            })),
+        });
+      }
+    });
+  return sheets;
+}
+
+function Approvals({ entries, setEntries }: { entries: HoursEntry[]; setEntries: (entries: HoursEntry[]) => void }) {
+  // Timesheets come from the shared hours; expenses and absence requests stay as the demo had them.
+  const [others, setOthers] = useState<ApprovalItem[]>(() => initialApprovals.filter((item) => !item.lines));
+  const items = [...teamSheets(entries), ...others];
+  // Every decision on a line is written back to the shared hours, so Hours overview and Time entries see it.
+  const setItems = (update: ApprovalItem[] | ((list: ApprovalItem[]) => ApprovalItem[])) => {
+    const next = typeof update === "function" ? update(items) : update;
+    const lines = new Map(next.flatMap((item) => item.lines ?? []).map((line) => [line.id, line]));
+    setEntries(
+      entries.map((entry) => {
+        const line = lines.get(entry.id);
+        if (!line) return entry;
+        const status = line.status === "sent_back" ? "rejected" : line.status;
+        if (status === entry.status && line.comment === entry.comment && line.recalled === entry.recalled && line.financeRequest === entry.financeRequest) return entry;
+        return { ...entry, status, comment: line.comment, recalled: line.recalled, financeRequest: line.financeRequest };
+      }),
+    );
+    setOthers(next.filter((item) => !item.lines));
+  };
   const [tab, setTab] = useState("All");
   const [week, setWeek] = useState("all");
   const [status, setStatus] = useState("all");
@@ -5110,12 +5214,34 @@ function Settings() {
   );
 }
 
+// Philip's own time entries in the shared shape. Customer time is client time; Internal hours is internal; no project is absence.
+function myHours(entries: TimeEntry[]): HoursEntry[] {
+  return entries.map((entry) => {
+    const project = projectOf(entry.project);
+    return {
+      id: 500000 + entry.id,
+      person: ME.id,
+      date: entry.date,
+      hours: entry.minutes / 60,
+      kind: !project ? "absence" : project.kind === "client" ? "client" : "internal",
+      status: entry.status,
+      created: entryHistory(entry).find((event) => event.text === "Submitted")?.at.slice(0, 10) ?? entry.date,
+      note: entry.customerText || entry.comment || undefined,
+      comment: entry.pmComment,
+    };
+  });
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
   const [deals, setDeals] = useState(initialDeals);
   const [dealId, setDealId] = useState(initialDeals[0].id);
   const [timeEntries, setTimeEntries] = useState(initialTimeEntries);
+  // Everyone else's time. Philip's own comes from Time entries, so one submit shows up everywhere.
+  const [teamHours, setTeamHours] = useState(hoursEntries);
+  const allHours = [...teamHours, ...myHours(timeEntries)];
+  const approvalsWaiting = teamSheets(teamHours).filter((item) => item.lines?.some((line) => line.status === "submitted")).length;
   const [timeWeek, setTimeWeek] = useState(mondayOf(TODAY));
   // What the automatic reminders would have sent the signed-in consultant, newest first.
   const thisWeek = timeEntries.filter((entry) => mondayOf(entry.date) === mondayOf(TODAY));
@@ -5170,9 +5296,9 @@ export default function App() {
         }}
       />
     );
-  else if (page === "approvals") content = <Approvals />;
-  else if (page === "hours") content = <HoursOverview />;
-  else if (page === "finance") content = <FinanceDashboard onOpen={setPage} />;
+  else if (page === "approvals") content = <Approvals entries={teamHours} setEntries={setTeamHours} />;
+  else if (page === "hours") content = <HoursOverview hours={allHours} onAddHours={(added) => setTeamHours([...teamHours, ...added])} />;
+  else if (page === "finance") content = <FinanceDashboard hours={allHours} onOpen={setPage} />;
   else if (page === "accounts") content = <Accounts deals={deals} onOpenDeal={openDeal} />;
   else if (page === "contacts") content = <Contacts />;
   else if (page === "leads") content = <Leads />;
@@ -5181,7 +5307,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar onChange={setPage} onClose={() => setMenuOpen(false)} open={menuOpen} page={page} />
+      <Sidebar approvals={approvalsWaiting} onChange={setPage} onClose={() => setMenuOpen(false)} open={menuOpen} page={page} />
       <main className="main">
         <Topbar notices={notices} onMenu={() => setMenuOpen(true)} onOpen={setPage} page={page} />
         <div className="content">{content}</div>
