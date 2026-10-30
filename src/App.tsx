@@ -948,7 +948,7 @@ function Utilization() {
 }
 
 // Time entries: the consultant's own week (F12-S04 to S07).
-// The demo is pinned to Thu 29 Oct 2026 so the seeded weeks line up with "today".
+// The demo is pinned to Fri 30 Oct 2026 (the review day) so the seeded weeks line up with "today".
 // Time types and billable defaults follow ADR-004 (Zephyr repo, docs/data/time_types.seed.json).
 // Design rule: the common case needs no choices. 96–97% of hours are Client Work and most people log on one project a
 // month, so customer rows have no type to pick. Rare things (task, customer text, overtime) only show up where they apply,
@@ -1015,7 +1015,7 @@ type TimeData = {
 type TimeSheet = { row: TimeRow; date: string; hours: string; comment: string; customerText: string; task: string; outsideHours: boolean; error: string };
 type TimePopover = { row: string; date: string; left: number; top?: number; bottom?: number };
 
-const TODAY = "2026-10-29";
+const TODAY = "2026-10-30";
 const standardDay = 8 * 60;
 const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -2357,7 +2357,6 @@ type HoursFilter = "all" | "missing" | "waiting" | "inactive" | "afterLock" | "e
 type MonthLock = { at: string; by: string };
 type Unlock = { person: string; month: string; until: string; reason: string; at: string; by: string };
 
-const YESTERDAY = addDays(TODAY, -1);
 const fullWeek = [0, 1, 2, 3, 4];
 
 const hoursPeople: HoursPerson[] = [
@@ -2393,7 +2392,7 @@ const fmtHours = (hours: number) => String(Math.round(hours * 10) / 10);
 function buildHours() {
   const entries: HoursEntry[] = [];
   for (const person of hoursPeople) {
-    for (let date = "2026-09-01"; date <= YESTERDAY; date = addDays(date, 1)) {
+    for (let date = "2026-09-01"; date <= TODAY; date = addDays(date, 1)) {
       if (isWeekend(date) || !person.days.includes(dayIndex(date))) continue;
       const late = person.late?.find((item) => date >= item.from && date <= item.to);
       if (!late && (inRanges(date, person.gaps) || (person.inactiveFrom && date >= person.inactiveFrom))) continue;
@@ -2440,15 +2439,14 @@ function workdaysBetween(from: string, to: string) {
   return count;
 }
 
-// Only days up to the cutoff count. In the running month that's the last full week, so people who
-// report on Fridays don't show as missing mid-week.
+// Working days up to the cutoff are expected. A month always expects the whole month; a week expects the days so far.
+// Days that haven't come yet show as "not yet" but still count in a month.
 function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<string, MonthLock>, cutoff: string) {
   const list = hoursEntries.filter((entry) => entry.person === person.id && entry.date >= period.start && entry.date <= period.end);
   const counted = list.filter((entry) => entry.date <= cutoff);
   const sum = (items: HoursEntry[]) => items.reduce((total, entry) => total + entry.hours, 0);
   const days: { date: string; state: DayState; hours: number }[] = [];
   let expected = 0;
-  let whole = 0;
   let run = 0;
   let longestGap = 0;
   for (let date = period.start; date <= period.end; date = addDays(date, 1)) {
@@ -2456,8 +2454,8 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
     const works = person.days.includes(dayIndex(date)) && !isHoliday(date);
     const onDay = list.filter((entry) => entry.date === date);
     const hours = sum(onDay);
-    if (works) whole += person.perDay;
-    if (date > cutoff) {
+    if (date > cutoff || date > TODAY) {
+      if (works && date <= cutoff) expected += person.perDay;
       days.push({ date, state: works ? "future" : "off", hours });
       continue;
     }
@@ -2477,7 +2475,6 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
   return {
     days,
     expected,
-    whole,
     reported,
     missing: Math.max(0, expected - reported),
     client: sum(counted.filter((entry) => entry.kind === "client")),
@@ -2511,7 +2508,7 @@ function HoursOverview() {
   const month = period.kind === "month" ? period.key : null;
   const lock = month ? locks[month] : undefined;
   const current = period.end >= TODAY;
-  const cutoff = !current ? period.end : period.kind === "month" ? addDays(mondayOf(TODAY), -1) : YESTERDAY;
+  const cutoff = current && period.kind === "week" ? TODAY : period.end;
   const rows = hoursPeople
     .map((person) => ({ person, stats: personHours(person, period, locks, cutoff), unlock: unlocks.find((item) => item.person === person.id && item.month === month && item.until >= TODAY) }))
     .sort((a, b) => {
@@ -2531,8 +2528,6 @@ function HoursOverview() {
 
   const total = (pick: (row: (typeof rows)[number]) => number) => rows.reduce((sum, row) => sum + pick(row), 0);
   const expected = total((row) => row.stats.expected);
-  const whole = total((row) => row.stats.whole);
-  const inPeriod = month ? `in ${monthName(month)}` : "this week";
   const reported = total((row) => row.stats.reported);
   const missing = total((row) => row.stats.missing);
   const waiting = total((row) => row.stats.waiting);
@@ -2598,9 +2593,9 @@ function HoursOverview() {
 
   function switchKind(kind: "month" | "week") {
     if (kind === period.kind) return;
-    // Weeks open on the last full week ("who didn't log 40 h last week"); months on the running month.
+    // Both open on the running period: the week to follow up this week, the month to see the whole month.
     const next = hoursPeriods.filter((item) => item.kind === kind);
-    const pick = kind === "week" ? next.filter((item) => item.end < TODAY).pop() : next.find((item) => item.start <= TODAY && item.end >= TODAY);
+    const pick = next.find((item) => item.start <= TODAY && item.end >= TODAY);
     setPeriodKey((pick ?? next[next.length - 1]).key);
   }
 
@@ -2656,7 +2651,7 @@ function HoursOverview() {
               ) : (
                 <Badge tone="slate">Week view · locks are set per month</Badge>
               )}
-              {current && <span className="ho-sofar">Counts up to {fmtDay(cutoff)}{period.kind === "month" ? ", the last full week" : ", this week so far"}</span>}
+              {current && period.kind === "week" && <span className="ho-sofar">Counts up to {fmtDay(cutoff)}, this week so far</span>}
             </p>
           </div>
           <Button aria-label="Next period" className="icon-button small" disabled={position >= sameKind.length - 1} onClick={() => setPeriodKey(sameKind[position + 1].key)}><Icon name="arrow" size={15} /></Button>
@@ -2679,7 +2674,7 @@ function HoursOverview() {
         <article className="ho-tile">
           <span>Reported</span>
           <strong className="tw-display">{pct}%</strong>
-          <small>{fmtHours(reported)} of {fmtHours(expected)} h expected{current ? ` so far · ${fmtHours(whole)} h ${inPeriod}` : ""}</small>
+          <small>{fmtHours(reported)} of {fmtHours(expected)} h expected</small>
           <div className="progress"><span style={{ width: `${Math.min(100, pct)}%` }} /></div>
         </article>
         <article className="ho-tile">
@@ -2759,7 +2754,7 @@ function HoursOverview() {
                   <td>
                     <div className="ho-days">
                       {stats.days.map((day) => (
-                        <i className={`ho-day ho-day--${day.state}`} key={day.date} title={`${fmtDay(day.date)}: ${day.state === "off" ? "not a working day" : day.state === "future" ? `not counted yet${day.hours ? ` (${fmtHours(day.hours)} h so far)` : ""}` : day.state === "absence" ? "vacation or absence" : `${fmtHours(day.hours)} h`}`} />
+                        <i className={`ho-day ho-day--${day.state}`} key={day.date} title={`${fmtDay(day.date)}: ${day.state === "off" ? "not a working day" : day.state === "future" ? `not yet${day.hours ? ` (${fmtHours(day.hours)} h so far)` : ""}` : day.state === "absence" ? "vacation or absence" : `${fmtHours(day.hours)} h`}`} />
                       ))}
                     </div>
                     {stats.gap >= 3 && <small className="ho-tag" title={`${stats.gap} working days in a row with no time. Vacation not logged?`}>{stats.gap}-day gap</small>}
@@ -2767,7 +2762,6 @@ function HoursOverview() {
                   </td>
                   <td className="r">
                     {fmtHours(stats.expected)}
-                    {current && <small className="ho-sub">so far · {fmtHours(stats.whole)} {inPeriod}</small>}
                     {person.days.length * person.perDay < 40 && <small className="ho-sub">{Math.round((person.days.length * person.perDay) / 0.4)}% time</small>}
                   </td>
                   <td>
@@ -2930,7 +2924,7 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
   const period = hoursPeriods.find((item) => item.key === month) ?? hoursPeriods[0];
   const locked = isMonthLocked(month);
   const deadline = monthDeadline(month);
-  const cutoff = period.end < TODAY ? period.end : addDays(mondayOf(TODAY), -1);
+  const cutoff = period.end;
   const locks: Record<string, MonthLock> = { "2026-09": { at: addDays(monthDeadline("2026-09"), 1), by: "Automatic" } };
   const people = hoursPeople.map((person) => ({ person, stats: personHours(person, period, locks, cutoff) }));
   const total = (pick: (row: (typeof people)[number]) => number) => people.reduce((sum, row) => sum + pick(row), 0);
@@ -2955,6 +2949,8 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
   const ready = customers.reduce((sum, item) => sum + item.value, 0);
   const readyHours = customers.reduce((sum, item) => sum + item.approved, 0);
   const notApproved = customers.reduce((sum, item) => sum + item.waiting, 0);
+  // Drafts haven't reached a project manager yet; only submitted time waits for one.
+  const withPm = clientHours.filter((entry) => entry.status === "submitted").reduce((sum, entry) => sum + entry.hours, 0);
 
   const queue = Object.entries(
     hoursEntries
@@ -3008,7 +3004,7 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
             <i className="tw-dot" />
             {locked
               ? `${monthName(month)} is closed. ${fmtHours(afterLock)} h came in after the lock, through unlocks with a reason.`
-              : `${plural(short, "person is", "people are")} still short ${fmtHours(missing)} h, and ${fmtHours(notApproved)} h of client time waits for a project manager.`}
+              : `${plural(short, "person is", "people are")} still short ${fmtHours(missing)} h, and ${fmtHours(withPm)} h of client time waits for a project manager.`}
           </span>
           <Button className="primary-button compact" onClick={() => onOpen("hours")}>{locked ? "See the lock log" : "See who"}</Button>
         </div>
@@ -3022,8 +3018,8 @@ function FinanceDashboard({ onOpen }: { onOpen: (page: Page) => void }) {
         </article>
         <article className="ho-tile">
           <span>Waiting for approval</span>
-          <strong className="tw-display">{fmtHours(notApproved)} h</strong>
-          <small>client time not approved yet</small>
+          <strong className="tw-display">{fmtHours(withPm)} h</strong>
+          <small>client time submitted, not approved yet</small>
         </article>
         <article className={`ho-tile ${missing ? "is-alert" : ""}`}>
           <span>Not reported</span>
@@ -3157,7 +3153,8 @@ function TimeSummary({ entries, weekStart, setWeekStart, requests, onRequest, on
   const asked = requests.some((item) => item.month === month);
   const soFar = TODAY < last ? (TODAY < first ? addDays(first, -1) : TODAY) : last;
   const monthMinutes = minutesIn(first, last);
-  const monthExpected = first > TODAY ? expectedIn(first, last) : expectedIn(first, soFar);
+  // A month always expects the whole month, also while it's running.
+  const monthExpected = expectedIn(first, last);
   const monthWeeks: string[] = [];
   for (let monday = mondayOf(first); monday <= last; monday = addDays(monday, 7)) monthWeeks.push(monday);
   const openDays = monthWeeks.flatMap(weekDates).filter((date) => date >= first && date <= soFar && expectedOn(date) > 0 && minutesOn(date) < expectedOn(date));
@@ -3250,7 +3247,7 @@ function TimeSummary({ entries, weekStart, setWeekStart, requests, onRequest, on
           </div>
           <div className="tw-figure">
             <strong className="tw-display">{fmtH(figure.minutes)}<small>h</small></strong>
-            <span className="tw-subtle">of {fmtH(figure.expected)}{view === "month" && !locked && first <= TODAY ? " so far" : ""}</span>
+            <span className="tw-subtle">of {fmtH(figure.expected)}</span>
           </div>
         </div>
         <div className="tw-line"><span style={{ width: `${figure.expected ? Math.min(100, (figure.minutes / figure.expected) * 100) : 0}%` }} /></div>
