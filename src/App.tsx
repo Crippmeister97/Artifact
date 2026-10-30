@@ -1129,8 +1129,7 @@ const initialTimeEntries: TimeEntry[] = [
   seed("2026-10-26", "nova", "client_work", 8, "draft"),
   seed("2026-10-27", "nova", "client_work", 4, "draft", { comment: "Workshop prep" }),
   seed("2026-10-27", "crm", "client_work", 4, "draft", { task: "Test", customerText: "Test planning with the customer's admins" }),
-  seed("2026-10-28", "nova", "client_work", 7.5, "draft"),
-  seed("2026-10-28", "crm", "internal_development", 0.5, "draft", { comment: "Salesforce admin course the customer asked for" }),
+  seed("2026-10-28", "nova", "client_work", 8, "draft"),
 ].map((entry, index) => ({ ...entry, id: index + 1 }));
 
 const statusLabel: Record<EntryStatus, string> = { draft: "Draft", submitted: "Submitted", approved: "Approved", rejected: "Rejected" };
@@ -1351,6 +1350,11 @@ function TimeEntries({ entries, setEntries: saveEntries, weekStart, setWeekStart
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [modal, setModal] = useState<TimeModal>(null);
+  // Add row asks one thing at a time: what kind of time, then which.
+  const [addStep, setAddStep] = useState<"start" | "customer" | "internal" | "away">("start");
+  useEffect(() => {
+    if (modal === "addRow") setAddStep("start");
+  }, [modal]);
   const [sheet, setSheet] = useState<TimeSheet | null>(null);
   const [pop, setPop] = useState<TimePopover | null>(null);
   const [toast, setToast] = useState("");
@@ -1799,106 +1803,80 @@ function TimeEntries({ entries, setEntries: saveEntries, weekStart, setWeekStart
   const modalBody = () => {
     if (modal === "addRow") {
       const projectsLeft = myProjects.filter((project) => !rows.some((row) => row.project === project.id));
-      const customerProjects = myProjects.filter((project) => project.kind === "client");
-      const internalLeft = homeProject ? internalTypes.filter((type) => !rows.some((row) => row.key === rowKey(homeProject.id, type))) : [];
+      const internalChoices: [TimeTypeCode, string][] = [
+        ["internal_development", "Course or certification"],
+        ["presales_support", "Helped sales with an offer or a pitch"],
+        ["customer_outreach", "Contacted customers to find new work"],
+        ["internal_project", "Worked on an internal project"],
+        ["resource_assignment_sales", "Between assignments, helping sales place me"],
+      ];
+      const internalLeft = homeProject ? internalChoices.filter(([type]) => !rows.some((row) => row.key === rowKey(homeProject.id, type))) : [];
       const awayLeft = (["vacation", "absence"] as TimeTypeCode[]).filter((type) => !rows.some((row) => row.key === rowKey(null, type)));
-      const option = (key: string, title: string, sub: string, row: TimeRow) => (
-        <button className="ar-item" key={key} onClick={() => addRow(row)} type="button">
-          <strong>{title}</strong>
-          {sub && <small>{sub}</small>}
+      // One clickable line: title, a short explanation under it, an arrow.
+      const choice = (key: string, title: string, sub: string, onClick: () => void) => (
+        <button className="ar-row" key={key} onClick={onClick} type="button">
+          <span><strong>{title}</strong>{sub && <small>{sub}</small>}</span>
+          <i aria-hidden="true">›</i>
         </button>
       );
-      return (
-        <>
-          {modalHead("Add a row", "")}
-          {projectsLeft.length > 0 && (
-            <div className="ar-group">
-              <h3>Your projects</h3>
-              {projectsLeft.map((project) => {
-                const type = myAssignments.find((item) => item.project === project.id)?.type ?? defaultType(project);
-                return option(project.id, project.name, project.account, { key: rowKey(project.id, type), project: project.id, type });
-              })}
-            </div>
-          )}
-          {homeProject && internalLeft.length > 0 && (
-            <div className="ar-group">
-              <h3>Internal</h3>
-              {internalLeft.map((type) =>
-                type === "internal_development" && customerProjects.length ? (
-                  <div className="ar-dev" key={type}>
-                    {option(type, typeOf(type).name, typeHelp[type] ?? "", { key: rowKey(homeProject.id, type), project: homeProject.id, type })}
-                    <span className="ar-dev-for">
-                      Needed for an assignment?
-                      {customerProjects
-                        .filter((project) => !rows.some((row) => row.key === rowKey(project.id, type)))
-                        .map((project) => (
-                          <Button className="tw-link" key={project.id} onClick={() => addRow({ key: rowKey(project.id, type), project: project.id, type })}>{project.name}</Button>
-                        ))}
-                    </span>
-                  </div>
-                ) : (
-                  option(type, typeOf(type).name, typeHelp[type] ?? "", { key: rowKey(homeProject.id, type), project: homeProject.id, type })
-                ),
+      const back = <Button className="text-button ar-back" onClick={() => setAddStep("start")}>‹ Back</Button>;
+      if (addStep === "customer")
+        return (
+          <>
+            {modalHead("Customer work", "")}
+            {back}
+            <div className="ar-list">
+              {projectsLeft.length ? (
+                projectsLeft.map((project) => {
+                  const type = myAssignments.find((item) => item.project === project.id)?.type ?? defaultType(project);
+                  return choice(project.id, project.name, project.account, () => addRow({ key: rowKey(project.id, type), project: project.id, type }));
+                })
+              ) : (
+                <p className="tw-hint ar-empty">All your projects are already in your week.</p>
               )}
             </div>
-          )}
-          {awayLeft.length > 0 && (
-            <div className="ar-group">
-              <h3>Time away</h3>
-              {awayLeft.map((type) => option(type, typeOf(type).name, typeHelp[type] ?? "", { key: rowKey(null, type), project: null, type }))}
+            <div className="ar-links">
+              <Button className="text-button" onClick={() => { setRequest({ query: "", project: "" }); setModal("request"); }}>Missing a project? Ask to be added</Button>
+              {overtimeProjects.length > 0 && <Button className="text-button" onClick={openOvertime}>Customer-ordered overtime</Button>}
             </div>
-          )}
+          </>
+        );
+      if (addStep === "internal")
+        return (
+          <>
+            {modalHead("Internal time", "What did you do?")}
+            {back}
+            <div className="ar-list">
+              {internalLeft.length ? (
+                internalLeft.map(([type, title]) => choice(type, title, typeOf(type).name, () => homeProject && addRow({ key: rowKey(homeProject.id, type), project: homeProject.id, type })))
+              ) : (
+                <p className="tw-hint ar-empty">All internal types are already in your week.</p>
+              )}
+            </div>
+          </>
+        );
+      if (addStep === "away")
+        return (
+          <>
+            {modalHead("Time away", "")}
+            {back}
+            <div className="ar-list">
+              {awayLeft.map((type) => choice(type, typeOf(type).name, typeHelp[type] ?? "", () => addRow({ key: rowKey(null, type), project: null, type })))}
+              {choice("range", "Several days at once", "E.g. a week of vacation", openAbsence)}
+            </div>
+          </>
+        );
+      return (
+        <>
+          {modalHead("Add a row", "What kind of time?")}
+          <div className="ar-list">
+            {choice("customer", "Customer work", projectsLeft.length ? projectsLeft.map((project) => project.name).join(", ") : "Your projects are already in your week", () => setAddStep("customer"))}
+            {homeProject && choice("internal", "Internal time", "Course, presales, internal project, between assignments", () => setAddStep("internal"))}
+            {choice("away", "Time away", "Vacation or absence", () => setAddStep("away"))}
+          </div>
           <div className="ar-links">
             <Button className="text-button" onClick={() => setModal("guide")}>Not sure what to log?</Button>
-            <Button className="text-button" onClick={() => { setRequest({ query: "", project: "" }); setModal("request"); }}>Can't find your project? Ask to be added</Button>
-            {overtimeProjects.length > 0 && <Button className="text-button" onClick={openOvertime}>Customer-ordered overtime</Button>}
           </div>
-        </>
-      );
-    }
-    if (modal === "change")
-      return (
-        <>
-          {modalHead(`Request a change to ${monthName(change.month)}`, "The month is locked. Finance opens it for you for a few days if they agree.")}
-          <label className="field tw-search">
-            <span>What do you need to change, and why?</span>
-            <TextInput autoFocus maxLength={300} onChange={(event) => setChange({ ...change, reason: event.target.value, error: "" })} placeholder="e.g. Forgot 4 h on CRM migration on 28 Sep" value={change.reason} />
-          </label>
-          {change.error && <p className="form-message form-message--error" role="alert">{change.error}</p>}
-          <Button className="primary-button compact full tw-confirm" onClick={sendChange}>Send to Finance</Button>
-        </>
-      );
-    if (modal === "request") {
-      const picked = projectOf(request.project);
-      return (
-        <>
-          {modalHead("Ask to be added", "You can only log time on projects you're on. The project manager gets your request.", () => setModal("addRow"))}
-          <label className="field tw-search">
-            <span>Project or customer</span>
-            <TextInput autoFocus onChange={(event) => setRequest({ query: event.target.value, project: "" })} placeholder="Type a few letters" value={request.query} />
-          </label>
-          <div className="tw-options">
-            {requestable.length ? (
-              requestable.slice(0, 8).map((project) => (
-                <button className={`tw-option ${request.project === project.id ? "is-active" : ""}`} key={project.id} onClick={() => setRequest({ ...request, project: project.id })} type="button">
-                  <strong>{project.name}</strong>
-                  <small>{project.account} · PM {project.pm}</small>
-                </button>
-              ))
-            ) : (
-              <p className="tw-hint">No active project matches.</p>
-            )}
-          </div>
-          <Button
-            className="primary-button compact full tw-confirm"
-            disabled={!picked}
-            onClick={() => {
-              setModal(null);
-              setToast(`${picked?.pm} has your request. ${picked?.name} shows up in your week once you're added.`);
-            }}
-          >
-            {picked ? `Send request to ${picked.pm}` : "Pick a project"}
-          </Button>
         </>
       );
     }
@@ -1908,7 +1886,7 @@ function TimeEntries({ entries, setEntries: saveEntries, weekStart, setWeekStart
       const home = (type: TimeTypeCode): TimeRow | null => (homeProject ? { key: rowKey(homeProject.id, type), project: homeProject.id, type } : null);
       const situations: { title: string; answer: string; row?: TimeRow | null; run?: () => void }[] = [
         { title: "I worked for a customer I'm assigned to", answer: "Use the customer's row. It's already in your week.", run: () => setModal(null) },
-        { title: "A course or a certification", answer: "Internal Development on Internal hours. If the customer needs it for the assignment, log it on their project.", row: home("internal_development") },
+        { title: "A course or a certification", answer: "Internal Development on Internal hours.", row: home("internal_development") },
         { title: "I helped sales with an offer or a pitch", answer: "Presales Support on Internal hours.", row: home("presales_support") },
         { title: "Between assignments, helping sales place me", answer: "Resource Assignment Sales on Internal hours.", row: home("resource_assignment_sales") },
         { title: "Work on an internal project", answer: "Internal Project on Internal hours.", row: home("internal_project") },
