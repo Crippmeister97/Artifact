@@ -1087,7 +1087,7 @@ const initialTimeEntries: TimeEntry[] = [
   // Week 44, this week: drafts up to Wednesday, today still empty. The CRM entry still lacks its customer text.
   seed("2026-10-26", "nova", "client_work", 8, "draft"),
   seed("2026-10-27", "nova", "client_work", 4, "draft", { comment: "Workshop prep" }),
-  seed("2026-10-27", "crm", "client_work", 4, "draft", { task: "Test" }),
+  seed("2026-10-27", "crm", "client_work", 4, "draft", { task: "Test", customerText: "Test planning with the customer's admins" }),
   seed("2026-10-28", "nova", "client_work", 7.5, "draft"),
   seed("2026-10-28", "crm", "internal_development", 0.5, "draft", { comment: "Salesforce admin course the customer asked for" }),
 ].map((entry, index) => ({ ...entry, id: index + 1 }));
@@ -1199,6 +1199,9 @@ function entryIssues(entry: TimeEntry) {
   if (entry.type === "overtime" && !isWeekend(entry.date) && !entry.outsideHours) issues.push("confirmation that it was outside ordinary hours");
   return issues;
 }
+
+// The button says what to do, not just "fix it".
+const fixLabel = (issue: string) => (issue === "a task" ? "Pick a task" : issue.startsWith("a text") ? "Add the text" : "Confirm it");
 
 function weekStatus(list: TimeEntry[]) {
   if (!list.length) return { label: "Nothing logged", tone: "slate" };
@@ -1613,12 +1616,12 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
 
   // Everything that stops the week from being submitted, one line per row and problem, each with the entry to fix.
   const needsWork = Object.values(
-    toSubmit.reduce<Record<string, { text: string; count: number; entry: TimeEntry }>>((groups, entry) => {
+    toSubmit.reduce<Record<string, { text: string; count: number; entry: TimeEntry; issue: string }>>((groups, entry) => {
       for (const issue of entryIssues(entry)) {
         const project = projectOf(entry.project);
         const name = `${rowName({ key: "", project: entry.project, type: entry.type })}${project && !project.home && entry.type !== "client_work" ? ` (${typeOf(entry.type).name})` : ""}`;
         const key = `${name}|${issue}`;
-        const group = groups[key] ?? { text: `${name} needs ${issue}`, count: 0, entry };
+        const group = groups[key] ?? { text: `${name} needs ${issue}`, count: 0, entry, issue };
         groups[key] = { ...group, count: group.count + 1 };
       }
       return groups;
@@ -1658,7 +1661,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
     }
     if (needsWork.length) {
       const first = needsWork[0];
-      return { tone: "amber", text: `${first.text}${first.count > 1 ? ` on ${plural(first.count, "entry", "entries")}` : ` for ${fmtDay(first.entry.date)}`}.`, action: "Complete it", run: () => fixEntry(first.entry) };
+      return { tone: "amber", text: `${first.text}${first.count > 1 ? ` on ${plural(first.count, "entry", "entries")}` : ` for ${fmtDay(first.entry.date)}`}.`, action: fixLabel(first.issue), run: () => fixEntry(first.entry) };
     }
     if (openDays.length && usualRow && !dismissed[weekStart]) {
       const when = openDays.length === 1 ? dayNames[dayIndex(openDays[0])] : `${openDays.length} days`;
@@ -1905,7 +1908,7 @@ function TimeEntries({ entries, setEntries, weekStart, setWeekStart, requests, o
               {needsWork.map((item) => (
                 <p className="tw-msg tw-msg--error tw-fix" key={item.text}>
                   <span>{item.text}{item.count > 1 ? ` on ${plural(item.count, "entry", "entries")}` : ""}.</span>
-                  <Button className="text-button" onClick={() => fixEntry(item.entry)}>Fix</Button>
+                  <Button className="text-button" onClick={() => fixEntry(item.entry)}>{fixLabel(item.issue)}</Button>
                 </p>
               ))}
               {warnings.map((text) => <p className="tw-msg tw-msg--warn" key={text}>{text}</p>)}
