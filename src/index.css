@@ -1261,4 +1261,18 @@ button.mini-row > .icon { color: var(--muted); }
 .ho-detail-week b { font-size: 12px; font-variant-numeric: tabular-nums; }
 .ho-detail-steps { display: grid; gap: 2px; }
 .ho-detail-steps .ho-step { max-width: none; }
-.ho-table .ho-steps .ho-step { max-width: 380px; }
+.ho-table .ho-steps .ho-step { max-width: none; }
+
+/* Calmer rows: action next to the problem, details arrow in a fixed place, grouped list. */
+.ho-table .ho-row td { height: auto; padding-top: 10px; padding-bottom: 10px; }
+.ho-step-action { margin-left: 10px; padding: 0; font-size: 11px; vertical-align: baseline; }
+.ho-actions { width: 1%; white-space: nowrap; text-align: right; }
+.ho-chevron-button { width: 28px; height: 28px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
+.ho-chevron-button:hover { background: #f1efe8; }
+.ho-chevron { display: inline-block; color: #b5b1a4; font-style: normal; font-size: 16px; transition: transform .15s; }
+.ho-chevron.is-open, .ho-row.is-open .ho-chevron { transform: rotate(90deg); }
+.ho-group td { padding: 14px 16px 6px; height: auto; color: #a19d90; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; background: transparent; }
+.ho-group.is-toggle { cursor: pointer; }
+.ho-group.is-toggle:hover td { color: var(--ink); }
+.ho-group .ho-chevron { margin-right: 4px; font-size: 13px; }
+.ho-view { margin-left: 8px; }

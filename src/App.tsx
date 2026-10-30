@@ -2655,7 +2655,8 @@ function personHours(person: HoursPerson, period: HoursPeriod, locks: Record<str
 }
 
 type HoursStats = ReturnType<typeof personHours>;
-type NextStep = { who: "consultant" | "pm"; text: string; late: boolean; hours: number; due: string };
+// text is what the row shows; action is the bare verb phrase for a reminder ("submit week 44").
+type NextStep = { who: "consultant" | "pm"; text: string; action: string; late: boolean; hours: number; due: string };
 
 // Whose turn it is. Invoicing uses approved hours only (Henry, 30 Oct), so a period is done when every working day is
 // submitted and approved. In a weekly rhythm consultants submit a week by the Monday after and PMs approve it by the
@@ -2683,11 +2684,11 @@ function weekGroups<T extends { date: string }>(days: T[]): [string, T[]][] {
   return [...groups.entries()];
 }
 
-// The step without who and when, for a reminder message: "Albin: submit week 44 · due Mon 2 Nov" → "submit week 44".
-const stepAction = (step?: NextStep) => (step ? step.text.replace(/^[^:]+: /, "").replace(/ · .*/, "") : "");
+const stepAction = (step?: NextStep) => step?.action ?? "";
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
+// The row is the person, so their own steps don't repeat their name ("Submit week 44"); the PM's steps do.
 function nextSteps(person: HoursPerson, stats: HoursStats): NextStep[] {
-  const first = person.name.split(" ")[0];
   const submitDue = (monday: string) => addDays(monday, 7);
   const approveDue = (monday: string) => addDays(monday, 9);
   const when = (due: string) => (due < TODAY ? `${plural(Math.max(1, workdaysBetween(due, TODAY)), "day", "days")} late` : `due ${fmtDay(due)}`);
@@ -2696,16 +2697,26 @@ function nextSteps(person: HoursPerson, stats: HoursStats): NextStep[] {
   // Split weeks into overdue and not yet due, so each becomes its own step.
   const split = (mondays: string[], due: (monday: string) => string) => [mondays.filter((monday) => due(monday) < TODAY), mondays.filter((monday) => due(monday) >= TODAY)];
   const steps: NextStep[] = [];
-  if (stats.expected && !stats.reported) return [{ who: "consultant", text: `${first}: nothing logged ${stats.last ? `since ${shortDate(stats.last)}` : "yet"}`, late: true, hours: stats.expected, due: period0(stats) }];
+  if (stats.expected && !stats.reported) return [{ who: "consultant", text: `Nothing logged ${stats.last ? `since ${shortDate(stats.last)}` : "yet"}`, action: "log your hours", late: true, hours: stats.expected, due: period0(stats) }];
   const emptyWeeks = [...new Set(stats.days.filter((day) => day.state === "none").map((day) => mondayOf(day.date)))];
   const hoursIn = (mondays: string[]) => stats.days.filter((day) => day.state === "none" && mondays.includes(mondayOf(day.date))).length * person.perDay;
   const hoursAt = (mondays: string[], status: HoursStatus) => stats.days.filter((day) => day.status === status && mondays.includes(mondayOf(day.date))).reduce((sum, day) => sum + day.hours, 0);
-  for (const group of split(emptyWeeks, submitDue))
-    if (group.length) steps.push({ who: "consultant", text: `${first}: log ${fmtHours(hoursIn(group))} h in ${weeks(group)}${stats.gap >= 3 && stats.reported ? " (vacation?)" : ""} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursIn(group), due: submitDue(group[0]) });
-  for (const group of split(stats.draftWeeks.filter((monday) => !emptyWeeks.includes(monday)), submitDue))
-    if (group.length) steps.push({ who: "consultant", text: `${first}: submit ${weeks(group)} · ${when(submitDue(group[0]))}`, late: submitDue(group[0]) < TODAY, hours: hoursAt(group, "draft"), due: submitDue(group[0]) });
-  for (const group of split(stats.waitingWeeks, approveDue))
-    if (group.length) steps.push({ who: "pm", text: `${person.pm}: approve ${weeks(group)} · ${when(approveDue(group[0]))}`, late: approveDue(group[0]) < TODAY, hours: hoursAt(group, "submitted"), due: approveDue(group[0]) });
+  for (const group of split(emptyWeeks, submitDue)) {
+    if (!group.length) continue;
+    const action = `log ${fmtHours(hoursIn(group))} h in ${weeks(group)}`;
+    steps.push({ who: "consultant", text: `${capital(action)}${stats.gap >= 3 && stats.reported ? " (vacation?)" : ""} · ${when(submitDue(group[0]))}`, action, late: submitDue(group[0]) < TODAY, hours: hoursIn(group), due: submitDue(group[0]) });
+  }
+  for (const group of split(stats.draftWeeks.filter((monday) => !emptyWeeks.includes(monday)), submitDue)) {
+    if (!group.length) continue;
+    const action = `submit ${weeks(group)}`;
+    steps.push({ who: "consultant", text: `${capital(action)} · ${when(submitDue(group[0]))}`, action, late: submitDue(group[0]) < TODAY, hours: hoursAt(group, "draft"), due: submitDue(group[0]) });
+  }
+  for (const group of split(stats.waitingWeeks, approveDue)) {
+    if (!group.length) continue;
+    const late = approveDue(group[0]) < TODAY;
+    const action = `approve ${weeks(group)}`;
+    steps.push({ who: "pm", text: `${person.pm} ${late ? "hasn't approved" : "approves"} ${weeks(group)} · ${when(approveDue(group[0]))}`, action, late, hours: hoursAt(group, "submitted"), due: approveDue(group[0]) });
+  }
   return steps;
 }
 
@@ -2766,6 +2777,7 @@ function HoursOverview() {
       return false;
     }
   });
+  const [showOnTrack, setShowOnTrack] = useState(false);
   const [openRow, setOpenRow] = useState<string | null>(null);
   function toggleWeeks() {
     setShowWeeks(!showWeeks);
@@ -2842,8 +2854,7 @@ function HoursOverview() {
   const filters: { key: HoursFilter; label: string }[] = [
     { key: "all", label: "Everyone" },
     { key: "behind", label: "Behind" },
-    { key: "empty", label: "Gaps, vacation not logged?" },
-    { key: "afterLock", label: "Added after lock" },
+    ...(month && lock ? [{ key: "afterLock" as HoursFilter, label: "Added after lock" }] : []),
   ];
   const search = query.trim().toLowerCase();
   const visible = rows.filter(tests[filter]).filter((row) => !search || `${row.person.name} ${row.person.role} ${row.person.pm}`.toLowerCase().includes(search));
@@ -2919,6 +2930,111 @@ function HoursOverview() {
   }
 
   const pctOf = (hours: number) => (expected ? Math.round((hours / expected) * 100) : 0);
+
+  const behindRows = visible.filter((row) => row.steps.some((step) => step.late));
+  const okRows = visible.filter((row) => !row.steps.some((step) => step.late));
+
+  const remind = (person: HoursPerson, step: NextStep) =>
+    setToast(
+      step.who === "consultant"
+        ? `Sent in Teams to ${person.name}: "Reminder: ${stepAction(step)}."`
+        : `Sent in Teams to ${person.pm}: "Please ${stepAction(step)} for ${person.name}. It's overdue."`,
+    );
+
+  const renderRow = ({ person, stats, steps, unlock }: (typeof rows)[number]) => {
+    const late = steps.filter((step) => step.late);
+    const open = openRow === person.id;
+    const partTime = person.days.length * person.perDay < 40 ? Math.round((person.days.length * person.perDay) / 0.4) : 0;
+    const unitsFor = units.map(([key, dates, label]) => {
+      const days = stats.days.filter((day) => dates.includes(day.date));
+      return { key, head: label, hours: days.reduce((sum, day) => sum + day.hours, 0), ...unitStatus(days, person.perDay) };
+    });
+    return (
+      <Fragment key={person.id}>
+        <tr aria-expanded={open} className={`ho-row ${open ? "is-open" : ""}`} onClick={() => setOpenRow(open ? null : person.id)}>
+          <td>
+            <span className="company-cell">
+              <Avatar name={person.name} size="small" />
+              <span className="case-cell">
+                <strong>{person.name}</strong>
+                <small>PM {person.pm}</small>
+              </span>
+            </span>
+          </td>
+          {showWeeks &&
+            unitsFor.map((unit) => (
+              <td className="ho-unit" key={unit.key} title={unit.title}>
+                <span className={`ho-unit-chip is-${unit.tone}`}>{unit.label}</span>
+              </td>
+            ))}
+          <td title={`${fmtHours(stats.submitted)} of ${fmtHours(stats.expected)} h expected submitted · ${fmtHours(stats.approved)} h approved · ${fmtHours(stats.waiting)} h with the PM · ${fmtHours(stats.draft)} h not submitted`}>
+            {/* Drafts haven't left the consultant's desk, so only submitted time counts. */}
+            <div className="ho-progress-head">
+              <strong>{fmtHours(stats.submitted)} h</strong>
+              {partTime > 0 && <span>· {partTime}% time</span>}
+            </div>
+            <div className="ho-progress">
+              {(["approved", "waiting", "draft"] as const).map((part) => (
+                <span className={`ho-progress--${part}`} key={part} style={{ width: `${stats.expected ? Math.min(100, (stats[part] / stats.expected) * 100) : 0}%` }} />
+              ))}
+            </div>
+            {(stats.afterLock > 0 || unlock) && (
+              <div className="ho-badges">
+                {stats.afterLock > 0 && <Badge tone="red">{fmtHours(stats.afterLock)} h after lock</Badge>}
+                {unlock && <Badge tone="violet">Unlocked to {shortDate(unlock.until)}</Badge>}
+              </div>
+            )}
+          </td>
+          <td className="ho-steps" onClick={(event) => (event.target as HTMLElement).closest("button") && event.stopPropagation()}>
+            {/* Only what's overdue, each with its action right next to it; the rest sits in the details. */}
+            {late.length ? (
+              late.map((step) => (
+                <span className={`ho-step ho-step--${step.who} is-late`} key={step.text}>
+                  {step.text}
+                  <Button className="text-button ho-step-action" onClick={() => remind(person, step)}>{step.who === "pm" ? "Nudge PM" : "Remind"}</Button>
+                </span>
+              ))
+            ) : (
+              <span className="ho-step is-done">✓ {steps.length ? "On track" : "Done"}</span>
+            )}
+          </td>
+          <td className="ho-actions" onClick={(event) => event.stopPropagation()}>
+            {month && lock && !unlock && <Button className="text-button" onClick={() => openUnlock(person.id)}>Unlock</Button>}
+            <button aria-label={open ? "Hide details" : "Show details"} className="ho-chevron-button" onClick={() => setOpenRow(open ? null : person.id)} type="button">
+              <i className={`ho-chevron ${open ? "is-open" : ""}`} aria-hidden="true">›</i>
+            </button>
+          </td>
+        </tr>
+        {open && (
+          <tr className="ho-detail-row">
+            <td colSpan={tableCols}>
+              <div className="ho-detail">
+                <p className="ho-detail-meta">
+                  {person.role} · {person.unit} · PM {person.pm} · last time {stats.last ? fmtDay(stats.last) : "never"} · {fmtHours(stats.submitted)} of {fmtHours(stats.expected)} h submitted · {fmtHours(stats.approved)} h approved · {fmtHours(stats.waiting)} h with the PM · {fmtHours(stats.draft)} h not submitted
+                </p>
+                <div className="ho-detail-weeks">
+                  {unitsFor.map((unit) => (
+                    <div className="ho-detail-week" key={unit.key} title={unit.title}>
+                      <small>{unit.head}</small>
+                      <span className={`ho-unit-chip is-${unit.tone}`}>{unit.label}</span>
+                      <b>{fmtHours(unit.hours)} h</b>
+                    </div>
+                  ))}
+                </div>
+                <div className="ho-detail-steps">
+                  {steps.length ? (
+                    steps.map((step) => <span className={`ho-step ho-step--${step.who} ${step.late ? "is-late" : "is-upcoming"}`} key={step.text}>{step.text}</span>)
+                  ) : (
+                    <span className="ho-step is-done">✓ Everything submitted and approved</span>
+                  )}
+                </div>
+              </div>
+            </td>
+          </tr>
+        )}
+      </Fragment>
+    );
+  };
 
   return (
     <div className="calm">
@@ -3014,7 +3130,13 @@ function HoursOverview() {
                 Remind all
               </Button>
             )}
-            <Button aria-pressed={showWeeks} className="text-button" onClick={toggleWeeks}>{showWeeks ? "Hide" : "Show"} {period.kind === "week" ? "days" : "weeks"}</Button>
+            <span className="tw-segment ho-view" role="radiogroup" aria-label="View">
+              {[false, true].map((weeks) => (
+                <button aria-checked={showWeeks === weeks} className={showWeeks === weeks ? "is-active" : ""} key={String(weeks)} onClick={() => showWeeks !== weeks && toggleWeeks()} role="radio" type="button">
+                  {weeks ? (period.kind === "week" ? "Days" : "Weeks") : "Summary"}
+                </button>
+              ))}
+            </span>
           </span>
         </div>
         <div className="table-scroll">
@@ -3031,94 +3153,21 @@ function HoursOverview() {
             </thead>
             <tbody>
               {!visible.length && <tr><td className="tw-empty" colSpan={tableCols}>Nobody matches this filter.</td></tr>}
-              {visible.map(({ person, stats, steps, unlock }) => {
-                const late = steps.filter((step) => step.late);
-                const open = openRow === person.id;
-                const unitsFor = units.map(([key, dates, label]) => {
-                  const days = stats.days.filter((day) => dates.includes(day.date));
-                  return { key, head: label, hours: days.reduce((sum, day) => sum + day.hours, 0), ...unitStatus(days, person.perDay) };
-                });
-                return (
-                  <Fragment key={person.id}>
-                    <tr aria-expanded={open} className={`ho-row ${open ? "is-open" : ""}`} onClick={() => setOpenRow(open ? null : person.id)}>
-                      <td>
-                        <span className="company-cell">
-                          <Avatar name={person.name} size="small" />
-                          <span className="case-cell">
-                            <strong>{person.name}</strong>
-                            <small>PM {person.pm}</small>
-                          </span>
-                          <i className="ho-chevron" aria-hidden="true">›</i>
-                        </span>
-                      </td>
-                      {showWeeks &&
-                        unitsFor.map((unit) => (
-                          <td className="ho-unit" key={unit.key} title={unit.title}>
-                            <span className={`ho-unit-chip is-${unit.tone}`}>{unit.label}</span>
-                          </td>
-                        ))}
-                      <td>
-                        {/* Drafts haven't left the consultant's desk, so only submitted time counts. */}
-                        <div className="ho-progress-head">
-                          <strong>{fmtHours(stats.submitted)}</strong>
-                          <span>/ {fmtHours(stats.expected)} h{person.days.length * person.perDay < 40 ? ` · ${Math.round((person.days.length * person.perDay) / 0.4)}%` : ""}</span>
-                        </div>
-                        <div className="ho-progress" title={`${fmtHours(stats.approved)} h approved · ${fmtHours(stats.waiting)} h with the PM · ${fmtHours(stats.draft)} h not submitted`}>
-                          {(["approved", "waiting", "draft"] as const).map((part) => (
-                            <span className={`ho-progress--${part}`} key={part} style={{ width: `${stats.expected ? Math.min(100, (stats[part] / stats.expected) * 100) : 0}%` }} />
-                          ))}
-                        </div>
-                        {(stats.afterLock > 0 || unlock) && (
-                          <div className="ho-badges">
-                            {stats.afterLock > 0 && <Badge tone="red">{fmtHours(stats.afterLock)} h after lock</Badge>}
-                            {unlock && <Badge tone="violet">Unlocked to {shortDate(unlock.until)}</Badge>}
-                          </div>
-                        )}
-                      </td>
-                      <td className="ho-steps">
-                        {/* Only what's overdue; the rest is normal and sits in the details. */}
-                        {late.length ? (
-                          late.map((step) => <span className={`ho-step ho-step--${step.who} is-late`} key={step.text}>{step.text}</span>)
-                        ) : (
-                          <span className="ho-step is-done">✓ {steps.length ? "On track" : "Done"}</span>
-                        )}
-                      </td>
-                      <td className="ho-actions" onClick={(event) => event.stopPropagation()}>
-                        {late.some((step) => step.who === "consultant") && <Button className="text-button" onClick={() => setToast(`Sent in Teams to ${person.name}: "Reminder: ${stepAction(late.find((step) => step.who === "consultant"))}."`)}>Remind</Button>}
-                        {late.some((step) => step.who === "pm") && <Button className="text-button" onClick={() => setToast(`Sent in Teams to ${person.pm}: "Please ${stepAction(late.find((step) => step.who === "pm"))} for ${person.name}. It's overdue."`)}>Nudge PM</Button>}
-                        {month && lock && !unlock && <Button className="text-button" onClick={() => openUnlock(person.id)}>Unlock</Button>}
-                      </td>
+              {filter === "all" ? (
+                <>
+                  {/* Everyone: the people behind first, the rest folded away until asked for. */}
+                  {behindRows.length > 0 && <tr className="ho-group"><td colSpan={tableCols}>Behind · {behindRows.length}</td></tr>}
+                  {behindRows.map(renderRow)}
+                  {okRows.length > 0 && (
+                    <tr aria-expanded={showOnTrack || !!query} className="ho-group is-toggle" onClick={() => setShowOnTrack(!showOnTrack)}>
+                      <td colSpan={tableCols}><i className={`ho-chevron ${showOnTrack || query ? "is-open" : ""}`} aria-hidden="true">›</i> On track · {okRows.length}</td>
                     </tr>
-                    {open && (
-                      <tr className="ho-detail-row">
-                        <td colSpan={tableCols}>
-                          <div className="ho-detail">
-                            <p className="ho-detail-meta">
-                              {person.role} · {person.unit} · PM {person.pm} · last time {stats.last ? fmtDay(stats.last) : "never"} · {fmtHours(stats.approved)} h approved · {fmtHours(stats.waiting)} h with the PM · {fmtHours(stats.draft)} h not submitted
-                            </p>
-                            <div className="ho-detail-weeks">
-                              {unitsFor.map((unit) => (
-                                <div className="ho-detail-week" key={unit.key} title={unit.title}>
-                                  <small>{unit.head}</small>
-                                  <span className={`ho-unit-chip is-${unit.tone}`}>{unit.label}</span>
-                                  <b>{fmtHours(unit.hours)} h</b>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="ho-detail-steps">
-                              {steps.length ? (
-                                steps.map((step) => <span className={`ho-step ho-step--${step.who} ${step.late ? "is-late" : "is-upcoming"}`} key={step.text}>{step.text}</span>)
-                              ) : (
-                                <span className="ho-step is-done">✓ Everything submitted and approved</span>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
+                  )}
+                  {(showOnTrack || !!query) && okRows.map(renderRow)}
+                </>
+              ) : (
+                visible.map(renderRow)
+              )}
             </tbody>
           </table>
         </div>
